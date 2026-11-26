@@ -37,7 +37,7 @@
         "LEONIDA_STUB_PIPELINES": "1",
         "LEONIDA_COMPILE_GATE": "0",
         "LEONIDA_SHADOW_GPU": "1",
-        "LEONIDA_SHADOW_ALIAS_MS": "16",
+        "LEONIDA_SHADOW_ALIAS_MS": "250",
         "LEONIDA_ASYNC_PIPELINES": "1",
         "LEONIDA_ASYNC_GRAPHICS": "1",
         "LEONIDA_KEYBOARD_PAD": "always",
