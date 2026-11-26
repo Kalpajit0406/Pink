@@ -1,0 +1,945 @@
+<Window x:Class="LeonidaLauncher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="LuaTools - Leonida // GTA VI Unified Launcher"
+        Height="860" Width="1280"
+        MinHeight="720" MinWidth="1020"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource Win11Bg}"
+        Foreground="{StaticResource Win11TextPrimary}"
+        FontFamily="Segoe UI"
+        Loaded="Window_Loaded" Closing="Window_Closing">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <!-- Left Sidebar Navigation Rail (LuaTools style) -->
+            <ColumnDefinition Width="200" />
+            <!-- Main Content Area -->
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ========================================== -->
+        <!-- LEFT SIDEBAR (LUATOOLS WINDOWS 11 STYLE)   -->
+        <!-- ========================================== -->
+        <Border Grid.Column="0" Background="{StaticResource Win11Sidebar}" BorderBrush="{StaticResource Win11Border}" BorderThickness="0,0,1,0">
+            <Grid Margin="10,14,10,14">
+                <Grid.RowDefinitions>
+                    <!-- Brand Header -->
+                    <RowDefinition Height="Auto" />
+                    <!-- Navigation Items -->
+                    <RowDefinition Height="*" />
+                    <!-- Bottom Controls & Version -->
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Brand Header (LuaTools style: purple swirl icon + title) -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="6,4,6,22" VerticalAlignment="Center">
+                    <!-- Glowing Purple Gradient Circle Icon -->
+                    <Border Width="28" Height="28" CornerRadius="14" Margin="0,0,10,0">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <GradientStop Color="#C026D3" Offset="0" />
+                                <GradientStop Color="#9333EA" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <TextBlock Text="VI" FontWeight="Black" FontSize="11" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="LuaTools" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Win11TextPrimary}" />
+                        <TextBlock Text="Leonida · GTA VI" FontSize="10" Foreground="{StaticResource Win11TextSecondary}" Margin="0,-2,0,0" />
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Main Navigation Menu (Matching LuaTools Sidebar Icons & Labels) -->
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <!-- 1. Home -->
+                        <Border x:Name="NavHome" Background="Transparent" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Home" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorHome" Width="3" Height="16" Background="Transparent" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="🏠" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Home" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextSecondary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 2. Add -->
+                        <Border x:Name="NavAdd" Background="Transparent" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Add" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorAdd" Width="3" Height="16" Background="Transparent" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="➕" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Add" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextSecondary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 3. Manage -->
+                        <Border x:Name="NavManage" Background="Transparent" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Manage" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorManage" Width="3" Height="16" Background="Transparent" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="🎮" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Manage" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextSecondary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 4. Tools (Active by default, matching screenshot!) -->
+                        <Border x:Name="NavTools" Background="#2C1F30" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Tools" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorTools" Width="3" Height="16" Background="{StaticResource Win11AccentPurple}" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="💼" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Tools" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextPrimary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 5. Mode -->
+                        <Border x:Name="NavMode" Background="Transparent" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Mode" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorMode" Width="3" Height="16" Background="Transparent" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="🎛️" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Mode" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextSecondary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 6. Fixes -->
+                        <Border x:Name="NavFixes" Background="Transparent" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Fixes" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorFixes" Width="3" Height="16" Background="Transparent" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="🛡️" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Fixes" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextSecondary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 7. Plugin -->
+                        <Border x:Name="NavPlugin" Background="Transparent" CornerRadius="6" Margin="0,1" Padding="10,9" MouseDown="Nav_Click" Tag="Plugin" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="IndicatorPlugin" Width="3" Height="16" Background="Transparent" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-7,0,0,0" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                                    <TextBlock Text="🧩" FontSize="13" Margin="0,0,10,0" />
+                                    <TextBlock Text="Plugin" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Win11TextSecondary}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Bottom Sidebar Controls (Matching LuaTools bottom rail) -->
+                <StackPanel Grid.Row="2">
+                    <Separator Background="{StaticResource Win11Border}" Margin="0,8,0,8" />
+                    <!-- Restart Engine (Like Restart Steam) -->
+                    <Border Background="Transparent" CornerRadius="6" Padding="8,6" MouseDown="BtnRestartEngine_Click" Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="🔄" FontSize="12" Margin="0,0,8,0" />
+                            <TextBlock Text="Restart Engine" FontSize="12" Foreground="{StaticResource Win11TextSecondary}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- Downloads -->
+                    <Border Background="Transparent" CornerRadius="6" Padding="8,6" MouseDown="Nav_Click" Tag="Downloads" Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="📥" FontSize="12" Margin="0,0,8,0" />
+                            <TextBlock Text="Downloads" FontSize="12" Foreground="{StaticResource Win11TextSecondary}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- Settings -->
+                    <Border Background="Transparent" CornerRadius="6" Padding="8,6" MouseDown="Nav_Click" Tag="Settings" Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⚙️" FontSize="12" Margin="0,0,8,0" />
+                            <TextBlock Text="Settings" FontSize="12" Foreground="{StaticResource Win11TextSecondary}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- Status / Version Label -->
+                    <TextBlock Text="v1.3.3 · Logged In (RTX 3050)" FontSize="10" Foreground="#6A626F" Margin="8,8,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ========================================== -->
+        <!-- MAIN CONTENT AREA                          -->
+        <!-- ========================================== -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <!-- Top Action Header Bar -->
+                <RowDefinition Height="64" />
+                <!-- Content Panes -->
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- TOP ACTION HEADER BAR (MATCHING SCREENSHOT) -->
+            <Border Grid.Row="0" Background="#181319" BorderBrush="{StaticResource Win11Border}" BorderThickness="0,0,0,1">
+                <Grid Margin="24,0,24,0">
+                    <Grid.ColumnDefinitions>
+                        <!-- Active Page Title: "Tools" by default -->
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <!-- Action Buttons: Download, Manage, Refresh, Launch -->
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock x:Name="TxtHeaderTitle" Grid.Column="0" Text="Tools" FontSize="24" FontWeight="Bold" Foreground="{StaticResource Win11TextPrimary}" VerticalAlignment="Center" />
+
+                    <!-- Header Action Buttons (Matching LuaTools right controls) -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <!-- Action 1: Download -->
+                        <Button x:Name="BtnHeaderDownload" Style="{StaticResource Win11Button}" Height="34" Margin="0,0,8,0" Click="BtnDownload_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="📥  Download" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Action 2: Manage -->
+                        <Button x:Name="BtnHeaderManage" Style="{StaticResource Win11Button}" Height="34" Margin="0,0,8,0" Click="BtnManage_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="🎮  Manage" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Action 3: Refresh -->
+                        <Button x:Name="BtnHeaderRefresh" Style="{StaticResource Win11Button}" Height="34" Margin="0,0,8,0" Click="BtnRefresh_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="🔄  Refresh" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Action 4: Run Number Badge -->
+                        <Border Background="#251C28" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,8,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Run: " FontSize="12" Foreground="{StaticResource Win11TextSecondary}" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TxtHeaderRunName" Text="run88" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- PROMINENT LAUNCH BUTTON IN HEADER -->
+                        <Button x:Name="BtnHeaderLaunch" Content="▶  LAUNCH GTA VI" Style="{StaticResource Win11LaunchButton}" Height="34" Margin="0,0,8,0" Click="BtnLaunch_Click" />
+
+                        <!-- STOP BUTTON -->
+                        <Button x:Name="BtnHeaderStop" Content="⏹  Stop" Style="{StaticResource Win11Button}" Height="34" Click="BtnStop_Click" IsEnabled="False" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ======================================================== -->
+            <!-- DYNAMIC CONTENT PANES                                    -->
+            <!-- ======================================================== -->
+            <Grid Grid.Row="1" Margin="24,18,24,18">
+
+                <!-- ==================================================================== -->
+                <!-- 1. PAGE: TOOLS (SPLIT VIEW EXACTLY LIKE THE LUATOOLS SCREENSHOT)     -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageTools" Visibility="Visible">
+                    <Grid.ColumnDefinitions>
+                        <!-- Left Column: Search & Game/Profile Cards List -->
+                        <ColumnDefinition Width="360" />
+                        <!-- Right Column: Game Details, Sliders & Launch Hub -->
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- LEFT COLUMN (LUATOOLS GAME LIST WITH PAGINATION) -->
+                    <Grid Grid.Column="0" Margin="0,0,16,0">
+                        <Grid.RowDefinitions>
+                            <!-- Search Input -->
+                            <RowDefinition Height="Auto" />
+                            <!-- Game / Profile List -->
+                            <RowDefinition Height="*" />
+                            <!-- Pagination Bar -->
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Search Input (Matching "Search by name or App ID...") -->
+                        <Border Grid.Row="0" Background="#1D1721" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="🔍" FontSize="12" Foreground="{StaticResource Win11TextSecondary}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <TextBox x:Name="TxtGameSearch" Grid.Column="1" Text="" Background="Transparent" Foreground="{StaticResource Win11TextPrimary}" BorderThickness="0" FontSize="12" TextChanged="TxtGameSearch_TextChanged" VerticalAlignment="Center">
+                                    <TextBox.Style>
+                                        <Style TargetType="TextBox">
+                                            <Style.Resources>
+                                                <VisualBrush x:Key="CueBannerBrush" AlignmentX="Left" AlignmentY="Center" Stretch="None">
+                                                    <VisualBrush.Visual>
+                                                        <TextBlock Text="Search by name or App ID..." Foreground="#6D6574" FontSize="12" />
+                                                    </VisualBrush.Visual>
+                                                </VisualBrush>
+                                            </Style.Resources>
+                                            <Style.Triggers>
+                                                <Trigger Property="Text" Value="">
+                                                    <Setter Property="Background" Value="{StaticResource CueBannerBrush}" />
+                                                </Trigger>
+                                                <Trigger Property="Text" Value="{x:Null}">
+                                                    <Setter Property="Background" Value="{StaticResource CueBannerBrush}" />
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBox.Style>
+                                </TextBox>
+                            </Grid>
+                        </Border>
+
+                        <!-- Game & Profile Cards List -->
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="PanelGameList">
+                                <!-- Game Item 1: GTA VI (Active Selection) -->
+                                <Border x:Name="GameCard0" Background="#2C2030" BorderBrush="{StaticResource Win11AccentPurple}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,6" Padding="10,8" Cursor="Hand" MouseDown="GameCard_Click" Tag="0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <!-- Game Thumbnail Badge (Matching screenshot 2:1 ratio) -->
+                                        <Border Width="48" Height="28" CornerRadius="4" Margin="0,0,8,0">
+                                            <Border.Background>
+                                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                                    <GradientStop Color="#EC4899" Offset="0" />
+                                                    <GradientStop Color="#8B5CF6" Offset="1" />
+                                                </LinearGradientBrush>
+                                            </Border.Background>
+                                            <TextBlock Text="GTA VI" FontWeight="Black" FontSize="10" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="Grand Theft Auto VI" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="Default" FontSize="11" Foreground="{StaticResource Win11AccentCyan}" Margin="0,1,0,0" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Game Item 2: Max Performance -->
+                                <Border x:Name="GameCard1" Background="#1D1721" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,6" Padding="10,8" Cursor="Hand" MouseDown="GameCard_Click" Tag="1">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="48" Height="28" CornerRadius="4" Background="#1E3A8A" Margin="0,0,8,0">
+                                            <TextBlock Text="PERF" FontWeight="Black" FontSize="9" Foreground="#60A5FA" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="GTA VI - Max Performance" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="Default" FontSize="11" Foreground="{StaticResource Win11AccentCyan}" Margin="0,1,0,0" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Game Item 3: Balanced 1080p -->
+                                <Border x:Name="GameCard2" Background="#1D1721" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,6" Padding="10,8" Cursor="Hand" MouseDown="GameCard_Click" Tag="2">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="48" Height="28" CornerRadius="4" Background="#065F46" Margin="0,0,8,0">
+                                            <TextBlock Text="BAL" FontWeight="Black" FontSize="9" Foreground="#34D399" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="GTA VI - Balanced 1080p" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="Default" FontSize="11" Foreground="{StaticResource Win11AccentCyan}" Margin="0,1,0,0" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Game Item 4: Visual Quality -->
+                                <Border x:Name="GameCard3" Background="#1D1721" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,6" Padding="10,8" Cursor="Hand" MouseDown="GameCard_Click" Tag="3">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="48" Height="28" CornerRadius="4" Background="#581C87" Margin="0,0,8,0">
+                                            <TextBlock Text="QUAL" FontWeight="Black" FontSize="9" Foreground="#C084FC" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="GTA VI - Visual Quality" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="Default" FontSize="11" Foreground="{StaticResource Win11AccentCyan}" Margin="0,1,0,0" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Game Item 5: Diagnostic Trace -->
+                                <Border x:Name="GameCard4" Background="#1D1721" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,6" Padding="10,8" Cursor="Hand" MouseDown="GameCard_Click" Tag="4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="48" Height="28" CornerRadius="4" Background="#78350F" Margin="0,0,8,0">
+                                            <TextBlock Text="DIAG" FontWeight="Black" FontSize="9" Foreground="#FBBF24" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="GTA VI - Diagnostic Trace" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="Default" FontSize="11" Foreground="{StaticResource Win11AccentCyan}" Margin="0,1,0,0" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Game Item 6: Custom Hardware -->
+                                <Border x:Name="GameCard5" Background="#1D1721" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,6" Padding="10,8" Cursor="Hand" MouseDown="GameCard_Click" Tag="5">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="48" Height="28" CornerRadius="4" Background="#374151" Margin="0,0,8,0">
+                                            <TextBlock Text="CFG" FontWeight="Black" FontSize="9" Foreground="#9CA3AF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="GTA VI - Custom Hardware" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="Default" FontSize="11" Foreground="{StaticResource Win11AccentCyan}" Margin="0,1,0,0" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Pagination Bar (Matching LuaTools `< Page 1 of 3 >` `Results per page 10`) -->
+                        <Grid Grid.Row="2" Margin="0,10,0,0">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <Button Content="&lt;" Style="{StaticResource Win11Button}" Width="28" Height="28" Padding="0" Margin="0,0,8,0" />
+                                <TextBlock Text="Page 1 of 1" FontSize="11" Foreground="{StaticResource Win11TextSecondary}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <Button Content="&gt;" Style="{StaticResource Win11Button}" Width="28" Height="28" Padding="0" Margin="0,0,16,0" />
+
+                                <TextBlock Text="Results per page" FontSize="11" Foreground="{StaticResource Win11TextSecondary}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <ComboBox Width="56" Height="26" SelectedIndex="0" Background="#1D1721" Foreground="{StaticResource Win11TextPrimary}">
+                                    <ComboBoxItem Content="10" />
+                                    <ComboBoxItem Content="20" />
+                                    <ComboBoxItem Content="50" />
+                                </ComboBox>
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+
+                    <!-- RIGHT COLUMN: SELECTED GAME DETAILS & SLIDERS -->
+                    <Border Grid.Column="1" Style="{StaticResource Win11CardPanel}" Margin="8,0,0,0">
+                        <Grid>
+                            <!-- DETAILS VIEW WHEN GAME IS SELECTED -->
+                            <Grid x:Name="PanelGameDetails" Visibility="Visible">
+                                <Grid.RowDefinitions>
+                                    <!-- Header Banner & Title -->
+                                    <RowDefinition Height="Auto" />
+                                    <!-- Sliders & Hardware Tuning Area -->
+                                    <RowDefinition Height="*" />
+                                    <!-- Bottom Launch & Pre-Flight Actions -->
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <!-- Header Title & Hardware Badges -->
+                                <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                                    <Grid>
+                                        <StackPanel>
+                                            <TextBlock x:Name="TxtSelectedGameTitle" Text="Grand Theft Auto VI" FontSize="26" FontWeight="Black" Foreground="{StaticResource Win11TextPrimary}" />
+                                            <TextBlock Text="Rockstar Games · Xbox Series Port · Direct3D 12 to Vulkan Translation Layer" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" Margin="0,2,0,0" />
+                                        </StackPanel>
+
+                                        <!-- Profile Dropdown Picker -->
+                                        <ComboBox x:Name="ComboProfiles" Width="220" HorizontalAlignment="Right" VerticalAlignment="Top" Background="#161217" Foreground="{StaticResource Win11TextPrimary}" BorderBrush="{StaticResource Win11Border}" Padding="8,4" SelectionChanged="ComboProfiles_SelectionChanged">
+                                            <ComboBoxItem Content="Max Performance (720p FSR, 6GB)" IsSelected="True" />
+                                            <ComboBoxItem Content="Balanced (900p-1080p FSR, 8GB)" />
+                                            <ComboBoxItem Content="Visual Quality (1080p Native)" />
+                                            <ComboBoxItem Content="Diagnostic &amp; Deep Trace" />
+                                            <ComboBoxItem Content="Custom Configuration" />
+                                        </ComboBox>
+                                    </Grid>
+
+                                    <!-- Hardware & Driver Badges Row -->
+                                    <WrapPanel Margin="0,10,0,0">
+                                        <Border Background="#1E1922" BorderBrush="#10B981" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,4">
+                                            <TextBlock Text="⚡ NVIDIA Hardware DXCache Active" FontSize="10" FontWeight="Bold" Foreground="#10B981" />
+                                        </Border>
+                                        <Border Background="#1E1922" BorderBrush="{StaticResource Win11AccentCyan}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,4">
+                                            <TextBlock Text="🚀 Vulkan 1.3 Fast Path Active" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11AccentCyan}" />
+                                        </Border>
+                                        <Border Background="#1E1922" BorderBrush="{StaticResource Win11AccentPurple}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,4">
+                                            <TextBlock Text="🎮 EvoFox Gamepad Connected (Slot 0)" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" />
+                                        </Border>
+                                        <Border Background="#1E1922" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,4">
+                                            <TextBlock x:Name="TxtPreflightShadersBadge" Text="✓ 26,526 Shaders Verified" FontSize="10" FontWeight="Bold" Foreground="#A098A4" />
+                                        </Border>
+                                        <Border Background="#1E1922" BorderBrush="{StaticResource Win11AccentPurple}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,4">
+                                            <TextBlock x:Name="TxtEngineStatus" Text="READY // STANDBY" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" />
+                                        </Border>
+                                    </WrapPanel>
+                                </StackPanel>
+
+                                <!-- Hardware Tuning Sliders Scroll Area -->
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <!-- Slider 1: Dedicated VRAM Budget -->
+                                        <Border Background="#19131C" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid Grid.Row="0">
+                                                    <TextBlock Text="DEDICATED VRAM BUDGET (NVIDIA RTX 3050)" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextPrimary}" />
+                                                    <TextBlock x:Name="TxtVramLabel" Text="6,144 MB (6.0 GB GDDR6)" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" HorizontalAlignment="Right" />
+                                                </Grid>
+                                                <Slider Grid.Row="1" x:Name="SliderVram" Minimum="4096" Maximum="8192" Value="6144" TickFrequency="1024" IsSnapToTickEnabled="True" Style="{StaticResource Win11Slider}" Margin="0,8,0,6" ValueChanged="SliderVram_ValueChanged" />
+                                                <TextBlock Grid.Row="2" Text="Clamps Vulkan allocations strictly to physical 6GB GDDR6 to prevent PCIe driver paging spillage into RAM." FontSize="10" Foreground="{StaticResource Win11TextSecondary}" />
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- Slider 2: Internal Rendering Resolution -->
+                                        <Border Background="#19131C" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid Grid.Row="0">
+                                                    <TextBlock Text="INTERNAL RENDERING RESOLUTION" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextPrimary}" />
+                                                    <TextBlock x:Name="TxtResLabel" Text="720p (1280x720 Minimum with FSR)" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Win11AccentCyan}" HorizontalAlignment="Right" />
+                                                </Grid>
+                                                <Slider Grid.Row="1" x:Name="SliderRes" Minimum="0" Maximum="2" Value="0" TickFrequency="1" IsSnapToTickEnabled="True" Style="{StaticResource Win11Slider}" Margin="0,8,0,6" ValueChanged="SliderRes_ValueChanged" />
+                                                <TextBlock Grid.Row="2" Text="Xbox Series S baseline resolution (720p / 900p / 1080p). 720p with FSR provides maximum stability." FontSize="10" Foreground="{StaticResource Win11TextSecondary}" />
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- Slider 3: Target Framerate Cap -->
+                                        <Border Background="#19131C" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid Grid.Row="0">
+                                                    <TextBlock Text="TARGET FRAMERATE / PACING CAP" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextPrimary}" />
+                                                    <TextBlock x:Name="TxtFpsLabel" Text="30 FPS (Locked Stable)" FontSize="12" FontWeight="Bold" Foreground="#10B981" HorizontalAlignment="Right" />
+                                                </Grid>
+                                                <Slider Grid.Row="1" x:Name="SliderFps" Minimum="30" Maximum="120" Value="30" TickFrequency="30" IsSnapToTickEnabled="True" Style="{StaticResource Win11Slider}" Margin="0,8,0,6" ValueChanged="SliderFps_ValueChanged" />
+                                                <TextBlock Grid.Row="2" Text="Smooth frame presentation pacing with multimedia timer precision (timeBeginPeriod)." FontSize="10" Foreground="{StaticResource Win11TextSecondary}" />
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- Slider 4: FSR Super Resolution Mode -->
+                                        <Border Background="#19131C" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid Grid.Row="0">
+                                                    <TextBlock Text="FSR SUPER RESOLUTION MODE" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextPrimary}" />
+                                                    <TextBlock x:Name="TxtFsrLabel" Text="Performance (0.50x Scale)" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" HorizontalAlignment="Right" />
+                                                </Grid>
+                                                <Slider Grid.Row="1" x:Name="SliderFsr" Minimum="0" Maximum="3" Value="0" TickFrequency="1" IsSnapToTickEnabled="True" Style="{StaticResource Win11Slider}" Margin="0,8,0,6" ValueChanged="SliderFsr_ValueChanged" />
+                                                <TextBlock Grid.Row="2" Text="Temporal upscaling mode: Performance, Balanced, Quality, or Native." FontSize="10" Foreground="{StaticResource Win11TextSecondary}" />
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- Hidden Quick Controls for Data Binding Compatibility -->
+                                        <Slider x:Name="SliderVramQuick" Visibility="Collapsed" />
+                                        <TextBlock x:Name="TxtVramQuickLabel" Visibility="Collapsed" />
+                                        <Slider x:Name="SliderFpsQuick" Visibility="Collapsed" />
+                                        <TextBlock x:Name="TxtFpsQuickLabel" Visibility="Collapsed" />
+                                        <Slider x:Name="SliderHostRam" Minimum="8192" Maximum="24576" Value="16384" Visibility="Collapsed" ValueChanged="SliderHostRam_ValueChanged" />
+                                        <TextBlock x:Name="TxtHostRamLabel" Visibility="Collapsed" />
+                                        <Slider x:Name="SliderTimeout" Minimum="60" Maximum="600" Value="300" Visibility="Collapsed" ValueChanged="SliderTimeout_ValueChanged" />
+                                        <TextBlock x:Name="TxtTimeoutLabel" Visibility="Collapsed" />
+                                        <TextBlock x:Name="TxtProfileDesc" Visibility="Collapsed" />
+
+                                        <!-- Engine Accelerations WrapPanel -->
+                                        <WrapPanel Margin="0,4,0,0">
+                                            <CheckBox x:Name="ChkConsoleHeapGpu" Content="Console Heap GPU" IsChecked="True" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                            <CheckBox x:Name="ChkGeometryAsync" Content="Async Geometry" IsChecked="True" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                            <CheckBox x:Name="ChkFullscreen" Content="Fullscreen (Borderless Mode)" IsChecked="False" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                            <CheckBox x:Name="ChkLockCursor" Content="Lock Cursor to Window" IsChecked="False" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                            <CheckBox x:Name="ChkRefreshPerFrame" Content="ReBAR Sweep" IsChecked="True" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                            <CheckBox x:Name="ChkHighPrecisionTimer" Content="1ms Multimedia Timer" IsChecked="True" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                            <CheckBox x:Name="ChkXapuAudio" Content="XAPU Audio Fix" IsChecked="True" Foreground="{StaticResource Win11TextPrimary}" Margin="0,2,16,2" />
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </ScrollViewer>
+
+                                <!-- Bottom Launch Hub (Run Name + Huge CTA) -->
+                                <Border Grid.Row="2" Background="#161118" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,6,0,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <!-- Run Name & Stepper -->
+                                            <ColumnDefinition Width="220" />
+                                            <!-- Status Text -->
+                                            <ColumnDefinition Width="*" />
+                                            <!-- Giant Launch Button -->
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- Run Session Stepper -->
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <TextBlock Text="SESSION RUN NUMBER:" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" Margin="0,0,0,3" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="TxtRunNameInput" Text="run88" Background="#1D1721" Foreground="{StaticResource Win11TextPrimary}" BorderBrush="{StaticResource Win11Border}" Padding="8,4" FontSize="13" FontWeight="Bold" TextChanged="TxtRunNameInput_TextChanged" />
+                                                <Button Grid.Column="1" Content="+ Next" Style="{StaticResource Win11Button}" Margin="4,0,0,0" Padding="8,4" Click="BtnNextRun_Click" />
+                                            </Grid>
+                                        </StackPanel>
+
+                                        <!-- Pre-flight Summary -->
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="16,0,16,0">
+                                            <TextBlock Text="PRE-FLIGHT HARDWARE CHECKS PASSED" FontSize="10" FontWeight="Bold" Foreground="#10B981" />
+                                            <TextBlock x:Name="TxtCtaSubtext" Text="NVIDIA DXCache Ready · Physical VRAM Budget Clamped" FontSize="11" Foreground="{StaticResource Win11TextSecondary}" Margin="0,2,0,0" />
+                                        </StackPanel>
+
+                                        <!-- GIANT LAUNCH BUTTON -->
+                                        <Button Grid.Column="2" x:Name="BtnGiantLaunch" Content="🚀  LAUNCH GTA VI" Style="{StaticResource Win11LaunchButton}" Height="44" Padding="24,8" FontSize="14" FontWeight="Bold" Click="BtnLaunch_Click" />
+                                    </Grid>
+                                </Border>
+                            </Grid>
+
+                            <!-- EMPTY STATE (WHEN NO GAME IS SELECTED - MATCHING LUATOOLS SCREENSHOT) -->
+                            <StackPanel x:Name="PanelGameEmpty" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="💼" FontSize="48" Foreground="#4A3F50" HorizontalAlignment="Center" Margin="0,0,0,16" />
+                                <TextBlock Text="Pick a game on the left to manage its depots, achievements, stats, launch options and playtime." FontSize="13" Foreground="{StaticResource Win11TextSecondary}" TextAlignment="Center" MaxWidth="380" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <!-- ==================================================================== -->
+                <!-- 2. PAGE: HOME OVERVIEW                                               -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageHome" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Pre-Flight Cards Row -->
+                    <Grid Grid.Row="0" Margin="0,0,0,16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Exe Card -->
+                        <Border Grid.Column="0" Style="{StaticResource Win11CardPanel}" Margin="0,0,8,0">
+                            <StackPanel>
+                                <TextBlock Text="RETAIL EXECUTABLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" />
+                                <TextBlock x:Name="TxtExeStatus" Text="game_scarlett_master.exe" FontSize="13" FontWeight="Bold" Foreground="#10B981" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="TxtExePath" Text="E:\GTA VI_XBOX" FontSize="10" Foreground="{StaticResource Win11TextSecondary}" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Shaders Card -->
+                        <Border Grid.Column="1" Style="{StaticResource Win11CardPanel}" Margin="4,0,4,0">
+                            <StackPanel>
+                                <TextBlock Text="SHADER PIPELINE CACHE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" />
+                                <TextBlock x:Name="TxtShadersStatus" Text="26,526 Shaders Verified" FontSize="13" FontWeight="Bold" Foreground="#10B981" Margin="0,4,0,0" />
+                                <TextBlock Text="NVIDIA Hardware DXCache Ready" FontSize="10" Foreground="{StaticResource Win11TextSecondary}" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Gamepad Card -->
+                        <Border Grid.Column="2" Style="{StaticResource Win11CardPanel}" Margin="8,0,0,0">
+                            <StackPanel>
+                                <TextBlock Text="GAMEPAD CONTROLLER" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" />
+                                <TextBlock x:Name="TxtGamepadStatus" Text="EvoFox Bluetooth (Connected)" FontSize="13" FontWeight="Bold" Foreground="{StaticResource Win11AccentCyan}" Margin="0,4,0,0" />
+                                <TextBlock Text="XInput Slot 0 Active &amp; Mapped" FontSize="10" Foreground="{StaticResource Win11TextSecondary}" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="1" Style="{StaticResource Win11CardPanel}">
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <TextBlock Text="LEONIDA GTA VI PC HYBRID PORT" FontSize="20" FontWeight="Black" Foreground="{StaticResource Win11TextPrimary}" HorizontalAlignment="Center" />
+                            <TextBlock Text="Navigate to 'Tools' on the left sidebar to manage game launch profiles and configure hardware sliders." FontSize="12" Foreground="{StaticResource Win11TextSecondary}" HorizontalAlignment="Center" Margin="0,6,0,16" />
+                            <Button Content="Go to Tools &amp; Hardware Profiles" Style="{StaticResource Win11LaunchButton}" Width="260" HorizontalAlignment="Center" Click="BtnGotoTools_Click" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- ==================================================================== -->
+                <!-- 3. PAGE: ADD / CUSTOM CONFIG OVERRIDES                               -->
+                <!-- ==================================================================== -->
+                <ScrollViewer x:Name="PageCustom" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Style="{StaticResource Win11CardPanel}" Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock Text="CUSTOM CONFIGURATION &amp; ENVIRONMENT OVERRIDES" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" />
+                                <TextBlock Text="Direct access to inject custom LEONIDA_* environment flags, command line parameters, and timed input scripts." FontSize="12" Foreground="{StaticResource Win11TextSecondary}" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Win11CardPanel}" Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock Text="CUSTOM ENVIRONMENT VARIABLES (KEY=VALUE PER LINE):" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" Margin="0,0,0,6" />
+                                <TextBox x:Name="TxtCustomEnv" Height="140" Background="#141016" Foreground="{StaticResource Win11TextPrimary}" BorderBrush="{StaticResource Win11Border}" FontFamily="Consolas" FontSize="12" Padding="8" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" />
+                                <TextBlock Text="e.g. LEONIDA_PRESENT_PLANE1=0 or LEONIDA_PEEK=0x1234,0x5678" FontSize="10" Foreground="{StaticResource Win11TextSecondary}" Margin="0,4,0,12" />
+
+                                <TextBlock Text="TIMED INPUT SCRIPT:" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" Margin="0,0,0,6" />
+                                <TextBox x:Name="TxtCustomInputScript" Text="a@15,a@25,a@35,a@45,a@60,a@75,a@90,a@120,a@150,a@180,a@210,a@240,a@260" Background="#141016" Foreground="{StaticResource Win11TextPrimary}" BorderBrush="{StaticResource Win11Border}" Padding="8,6" FontSize="12" Margin="0,0,0,14" />
+
+                                <Button Content="Apply Custom Config" Style="{StaticResource Win11LaunchButton}" Width="200" HorizontalAlignment="Right" Click="BtnSaveSettings_Click" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- ==================================================================== -->
+                <!-- 4. PAGE: MANAGE (SESSIONS & LOGS)                                    -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageHistory" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="420" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource Win11CardPanel}" Margin="0,0,8,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="HISTORICAL BOOT SESSIONS" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" Margin="0,0,0,8" />
+                            <ListBox x:Name="ListRunSessions" Grid.Row="1" Background="Transparent" BorderThickness="0" SelectionChanged="ListRunSessions_SelectionChanged">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#1C161D" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,6">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Win11AccentPurple}" />
+                                                    <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{StaticResource Win11TextSecondary}" Margin="0,2,0,0" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                                                    <TextBlock Text="{Binding Presents, StringFormat='{}{0} Presents'}" FontSize="11" FontWeight="Bold" Foreground="#10B981" HorizontalAlignment="Right" />
+                                                    <TextBlock Text="{Binding Timestamp, StringFormat='{}{0:MM/dd HH:mm}'}" FontSize="10" Foreground="{StaticResource Win11TextSecondary}" Margin="0,2,0,0" HorizontalAlignment="Right" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="1" Style="{StaticResource Win11CardPanel}" Margin="8,0,0,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock x:Name="TxtSelectedRunHeader" Text="SELECT A RUN TO INSPECT" FontSize="13" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" Margin="0,0,0,8" />
+                            <TextBox x:Name="TxtRunDetailSummary" Grid.Row="1" Background="#110D12" Foreground="#C5D1DE" FontFamily="Consolas" FontSize="11" IsReadOnly="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" BorderBrush="{StaticResource Win11Border}" BorderThickness="1" Padding="8" />
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <!-- ==================================================================== -->
+                <!-- 5. PAGE: MODE (HARDWARE SLIDERS FULL PAGE)                           -->
+                <!-- ==================================================================== -->
+                <ScrollViewer x:Name="PageSliders" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Style="{StaticResource Win11CardPanel}" Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock Text="HIGH-PRECISION HARDWARE SLIDERS &amp; PACING MODES" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" />
+                                <TextBlock Text="Full control over resolution clamping, dedicated VRAM limits, framerate capping, and watchdog session timeouts." FontSize="12" Foreground="{StaticResource Win11TextSecondary}" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Button Content="Save &amp; Apply Sliders" Style="{StaticResource Win11LaunchButton}" Width="220" HorizontalAlignment="Right" Margin="0,12,0,0" Click="BtnSaveSettings_Click" />
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- ==================================================================== -->
+                <!-- 6. PAGE: FIXES (WORKAROUNDS & OPTIMIZATIONS)                         -->
+                <!-- ==================================================================== -->
+                <Border x:Name="PageFixes" Style="{StaticResource Win11CardPanel}" Visibility="Collapsed">
+                    <StackPanel>
+                        <TextBlock Text="ENGINE FIXES &amp; GRAPHICS WORKAROUNDS" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Win11AccentPurple}" Margin="0,0,0,12" />
+                        <TextBlock Text="Toggle key runtime shims and driver workarounds verified for GTA VI." FontSize="12" Foreground="{StaticResource Win11TextSecondary}" Margin="0,0,0,16" />
+
+                        <WrapPanel Margin="0,0,0,16">
+                            <CheckBox Content="Fullscreen (Borderless Mode - F11 / Alt+Enter)" IsChecked="{Binding IsChecked, ElementName=ChkFullscreen, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                            <CheckBox Content="Lock Mouse Cursor to Window Boundary" IsChecked="{Binding IsChecked, ElementName=ChkLockCursor, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                            <CheckBox Content="1ms Multimedia Timer (timeBeginPeriod(1))" IsChecked="{Binding IsChecked, ElementName=ChkHighPrecisionTimer, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                            <CheckBox Content="XAPU Audio Queue Stutter Fix" IsChecked="{Binding IsChecked, ElementName=ChkXapuAudio, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                            <CheckBox Content="Per-Frame ReBAR Staging Memory Sweep" IsChecked="{Binding IsChecked, ElementName=ChkRefreshPerFrame, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                            <CheckBox Content="Console Heap GPU Acceleration" IsChecked="{Binding IsChecked, ElementName=ChkConsoleHeapGpu, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                            <CheckBox Content="Async Geometry Queue Processing" IsChecked="{Binding IsChecked, ElementName=ChkGeometryAsync, Mode=TwoWay}" Foreground="{StaticResource Win11TextPrimary}" Margin="0,6,24,6" />
+                        </WrapPanel>
+
+                        <Button Content="Save Engine Fixes" Style="{StaticResource Win11LaunchButton}" Width="200" HorizontalAlignment="Right" Click="BtnSaveSettings_Click" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ==================================================================== -->
+                <!-- 7. PAGE: PLUGIN (SHADER PIPELINE PRECOMPILER)                        -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageShaders" Visibility="Collapsed">
+                    <Border Style="{StaticResource Win11CardPanel}" VerticalAlignment="Center" HorizontalAlignment="Center" Width="640">
+                        <StackPanel Margin="16">
+                            <TextBlock Text="SHADER PIPELINE PRECOMPILER PLUGIN" FontSize="20" FontWeight="Black" Foreground="{StaticResource Win11AccentPurple}" HorizontalAlignment="Center" />
+                            <TextBlock Text="Precompiles all 26,526 RDNA2 to SPIR-V shaders straight into NVIDIA hardware driver cache (%LOCALAPPDATA%\NVIDIA\DXCache)." FontSize="12" Foreground="{StaticResource Win11TextSecondary}" HorizontalAlignment="Center" Margin="0,6,0,24" TextWrapping="Wrap" TextAlignment="Center" />
+
+                            <ProgressBar x:Name="ProgressShaders" Height="18" Value="100" Maximum="100" Foreground="{StaticResource Win11AccentPurple}" Background="#141016" BorderBrush="{StaticResource Win11Border}" Margin="0,0,0,10" />
+
+                            <Grid Margin="0,0,0,14">
+                                <TextBlock x:Name="TxtShaderPercent" Text="100%" FontWeight="Black" FontSize="16" Foreground="#10B981" HorizontalAlignment="Left" />
+                                <TextBlock x:Name="TxtShaderCount" Text="26,526 / 26,526 Pipelines Ready" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource Win11TextPrimary}" HorizontalAlignment="Right" />
+                            </Grid>
+
+                            <TextBlock x:Name="TxtCurrentShader" Text="Status: NVIDIA DXCache active and pre-warmed." FontSize="11" Foreground="{StaticResource Win11TextSecondary}" TextTrimming="CharacterEllipsis" Margin="0,0,0,20" />
+
+                            <Button x:Name="BtnPrecompile" Content="VERIFY &amp; WARMUP ALL SHADERS" Style="{StaticResource Win11LaunchButton}" Height="40" Click="BtnPrecompile_Click" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- ==================================================================== -->
+                <!-- 8. PAGE: TELEMETRY HUD                                               -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageTelemetry" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource Win11CardPanel}" Margin="0,0,6,0">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="INSTANT FPS" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" HorizontalAlignment="Center" />
+                                <TextBlock x:Name="TxtMetricsFps" Text="30.0" FontSize="30" FontWeight="Black" Foreground="#10B981" HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource Win11CardPanel}" Margin="4,0,4,0">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="FRAMETIME" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" HorizontalAlignment="Center" />
+                                <TextBlock x:Name="TxtMetricsFrametime" Text="33.3 ms" FontSize="30" FontWeight="Black" Foreground="{StaticResource Win11AccentPurple}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource Win11CardPanel}" Margin="4,0,4,0">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="VRAM ALLOCATED" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" HorizontalAlignment="Center" />
+                                <TextBlock x:Name="TxtMetricsVram" Text="5,420 MB" FontSize="26" FontWeight="Black" Foreground="{StaticResource Win11AccentCyan}" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="3" Style="{StaticResource Win11CardPanel}" Margin="6,0,0,0">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="DSTORAGE I/O" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" HorizontalAlignment="Center" />
+                                <TextBlock x:Name="TxtMetricsDStorage" Text="380 MB/s" FontSize="26" FontWeight="Black" Foreground="#10B981" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="1" Style="{StaticResource Win11CardPanel}">
+                        <Grid>
+                            <TextBlock Text="REAL-TIME FRAMETIME PACING (LAST 100 SAMPLES)" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Win11TextSecondary}" VerticalAlignment="Top" HorizontalAlignment="Left" />
+                            <TextBlock Text="Target: 33.3 ms (30 FPS)" FontSize="11" FontWeight="Bold" Foreground="#10B981" VerticalAlignment="Top" HorizontalAlignment="Right" />
+                            <Canvas x:Name="CanvasFrametime" Margin="0,24,0,0" ClipToBounds="True" SizeChanged="CanvasFrametime_SizeChanged" />
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <!-- ==================================================================== -->
+                <!-- 9. PAGE: LIVE CONSOLE LOGS                                           -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageLogs" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,10">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Filter:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{StaticResource Win11TextSecondary}" />
+                            <TextBox x:Name="TxtLogSearch" Width="260" Background="#161217" Foreground="{StaticResource Win11TextPrimary}" BorderBrush="{StaticResource Win11Border}" Padding="6,4" TextChanged="TxtLogSearch_TextChanged" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <CheckBox x:Name="ChkAutoScroll" Content="Auto-scroll" IsChecked="True" Foreground="{StaticResource Win11TextSecondary}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                            <Button Content="Clear" Style="{StaticResource Win11Button}" Margin="0,0,6,0" Click="BtnClearLog_Click" />
+                            <Button Content="Export Dump" Style="{StaticResource Win11Button}" Click="BtnExportLog_Click" />
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBox x:Name="TxtConsoleLog" Grid.Row="1"
+                             Background="#0D090E" Foreground="#C4BAC7"
+                             FontFamily="Consolas" FontSize="12"
+                             IsReadOnly="True" TextWrapping="NoWrap"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             BorderBrush="{StaticResource Win11Border}" BorderThickness="1" Padding="10" />
+                </Grid>
+
+                <!-- ==================================================================== -->
+                <!-- 10. PAGE: CAPTURES GALLERY                                           -->
+                <!-- ==================================================================== -->
+                <Grid x:Name="PageCaptures" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="Swapchain Capture Frames:" VerticalAlignment="Center" Foreground="{StaticResource Win11TextSecondary}" Margin="0,0,8,0" />
+                        <ComboBox x:Name="ComboFrameFiles" Width="220" SelectionChanged="ComboFrameFiles_SelectionChanged" />
+                        <TextBlock x:Name="TxtFrameInfo" Text="" VerticalAlignment="Center" Foreground="{StaticResource Win11AccentPurple}" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Border Grid.Row="1" Style="{StaticResource Win11CardPanel}">
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                            <Image x:Name="ImgFramePreview" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

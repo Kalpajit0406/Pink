@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RollForward>Major</RollForward>
+    <AssemblyName>LeonidaLauncher</AssemblyName>
+    <RootNamespace>LeonidaLauncher</RootNamespace>
+    <ApplicationTitle>Leonida - GTA VI PC Launcher</ApplicationTitle>
+    <Company>Ubiquitarianism</Company>
+    <Product>Leonida Unified Launcher</Product>
+  </PropertyGroup>
+
+</Project>

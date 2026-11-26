@@ -1,0 +1,47 @@
+// Clamp a GPU-written D3D12 ExecuteIndirect DISPATCH count without reading it on the CPU.
+// Each record is a VkDispatchIndirectCommand (three uints); disabled records are zero.
+#version 460
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer WordsIn {
+    uint data[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer WordsOut {
+    uint data[];
+};
+layout(push_constant) uniform Params {
+    WordsIn arguments;
+    WordsIn count;
+    WordsOut output_words;
+    uint stride_words;
+    uint first_record;
+    uint records;
+    uint budget;
+    uint has_count;
+} p;
+void main() {
+    const uint local_record = gl_GlobalInvocationID.x;
+    if (local_record >= p.records) return;
+    const uint target = local_record * 3u;
+    if (p.has_count == 0u || p.first_record + local_record < p.count.data[0]) {
+        const uint source = local_record * p.stride_words;
+        uvec3 groups = uvec3(p.arguments.data[source], p.arguments.data[source + 1u],
+                             p.arguments.data[source + 2u]);
+        if (p.budget != 0u) {
+            if (any(equal(groups, uvec3(0u)))) groups = uvec3(0u);
+            else {
+                groups.x = min(groups.x, p.budget);
+                uint remaining = p.budget / groups.x;
+                groups.y = min(groups.y, remaining);
+                groups.z = min(groups.z, remaining / groups.y);
+            }
+        }
+        p.output_words.data[target] = groups.x;
+        p.output_words.data[target + 1u] = groups.y;
+        p.output_words.data[target + 2u] = groups.z;
+    } else {
+        p.output_words.data[target] = 0u;
+        p.output_words.data[target + 1u] = 0u;
+        p.output_words.data[target + 2u] = 0u;
+    }
+}

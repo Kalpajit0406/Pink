@@ -1,0 +1,50 @@
+# ---- never commit the game or anything made from it ----
+# (archives, executables, carved files, shaders, textures, models, audio, reports that quote game data)
+reports/
+work/
+/assets/*
+!/assets/logo.png
+!/assets/logo.svg
+carve/
+# rpf9-explorer's index cache (archive paths and entry names); see "Full-scan indexes" in docs/design.md
+RpfPreview/
+*.rpf
+*.ttpf
+*.xvd
+*.msixvc
+*.dxbc
+*.fssm
+*.spv
+*.spvasm
+*.dds
+*.bk2
+*.awc
+*.r9modeldata
+*.obj
+*.glb
+*.ogg
+*.wav
+
+# ---- build output and caches ----
+build/
+build-*/
+bin/
+obj/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.log
+.vs/
+
+# Predictor profiles are fitted from the user's own texture pools.
+*.bcph
+*.bcph.stamp
+
+*.elf
+
