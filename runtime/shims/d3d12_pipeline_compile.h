@@ -176,7 +176,7 @@ public:
             const std::int64_t waited = submits.let_submit_finish(worker_);
             if (waited >= 50) note("waited for the submit lock", trigger, call, name, waited);
         }
-        if (pipeline && (!worker_ || (trigger && std::strcmp(trigger, "warmup") != 0))) {
+        if (pipeline && !worker_) {
             gate_.emplace(submits);
             if (gate_->waited_ms() >= 50) note("waited at the compile gate", trigger, call, name, gate_->waited_ms());
         }

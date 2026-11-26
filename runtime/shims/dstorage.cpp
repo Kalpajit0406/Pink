@@ -411,7 +411,7 @@ File* live_file(IDStorageFileX* p) {
 // memmove that turns an access violation into an error instead of ending the process. No C++ objects here: a
 // function with __try cannot have any that need unwinding. The bytes move in leonida::guarded::move, not the CRT's
 // memmove: under Wine a fault inside ucrtbase never reaches this __except (src/guarded_copy.h).
-bool guarded_move(void* destination, const void* source, size_t size) {
+static bool guarded_move_impl(void* destination, const void* source, size_t size) {
     __try {
         leonida::guarded::move(destination, source, size);
         return true;
@@ -419,6 +419,12 @@ bool guarded_move(void* destination, const void* source, size_t size) {
                                                                   : EXCEPTION_CONTINUE_SEARCH) {
         return false;
     }
+}
+
+bool guarded_move(void* destination, const void* source, size_t size) {
+    if (!destination || !source || size == 0) return true;
+    leonida::guarded::GuardScope guard;
+    return guarded_move_impl(destination, source, size);
 }
 
 // Reads one byte of every 4 KiB page of the range from user mode. Title memory that xmem maps from physical pages is

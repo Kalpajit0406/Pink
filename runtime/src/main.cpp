@@ -42,6 +42,7 @@
 #include <vector>
 
 #include <cstring>
+#include "guarded_copy.h"
 
 namespace {
 
@@ -281,6 +282,7 @@ static LONG WINAPI on_crash_veh(PEXCEPTION_POINTERS ep) {
     const DWORD code = ep->ExceptionRecord->ExceptionCode;
     if (code == 0xE06D7363 || code == 0x406D1388 || code == 0x000006BA) return EXCEPTION_CONTINUE_SEARCH;
     if ((code & 0x80000000) != 0x80000000) return EXCEPTION_CONTINUE_SEARCH;
+    if (code == EXCEPTION_ACCESS_VIOLATION && leonida::guarded::is_guarded()) return EXCEPTION_CONTINUE_SEARCH;
 
     if (code == EXCEPTION_ILLEGAL_INSTRUCTION && ep->ContextRecord) {
         auto* at = reinterpret_cast<unsigned char*>(ep->ContextRecord->Rip);
@@ -421,6 +423,17 @@ static LONG WINAPI on_crash_veh(PEXCEPTION_POINTERS ep) {
             std::fprintf(stderr, "[rt] recovered: null pool in queue pop at +0x55AC264; returning empty (null)\n");
             fflush(stderr);
             ep->ContextRecord->Rip = base + 0x055AC2A1;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (code == EXCEPTION_INT_DIVIDE_BY_ZERO && rva == 0x028F03E8) {
+            std::fprintf(stderr, "[rt] recovered: divide by zero in scene queue ring buffer at +0x28F03E8; setting divisor to 1 and continuing\n");
+            fflush(stderr);
+            auto* div_ptr = reinterpret_cast<uint32_t*>(ep->ContextRecord->Rdi + 0x10C);
+            if (div_ptr && *div_ptr == 0) {
+                *div_ptr = 1;
+            }
+            ep->ContextRecord->Rdx = 0;
+            ep->ContextRecord->Rip = base + 0x028F03EE;
             return EXCEPTION_CONTINUE_EXECUTION;
         }
     }

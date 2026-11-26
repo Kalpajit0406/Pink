@@ -227,7 +227,7 @@ __declspec(noinline) LEONIDA_GUARDED_NO_BUILTIN void copy_streaming(std::uint8_t
 // A copy that a page fault ends instead of killing the process: the title may decommit or remap a page between the
 // VirtualQuery that saw it committed and the read. No C++ objects here: it is a __try frame. `streaming`: for
 // write-combined pages (copy_streaming). Paid at every submission.
-bool copy_guarded(std::uint8_t* to, const std::uint8_t* from, std::size_t bytes, bool streaming) {
+static bool copy_guarded_frame(std::uint8_t* to, const std::uint8_t* from, std::size_t bytes, bool streaming) {
     __try {
         if (streaming) copy_streaming(to, from, bytes);
         else leonida::guarded::copy(to, from, bytes);
@@ -235,6 +235,12 @@ bool copy_guarded(std::uint8_t* to, const std::uint8_t* from, std::size_t bytes,
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+bool copy_guarded(std::uint8_t* to, const std::uint8_t* from, std::size_t bytes, bool streaming) {
+    if (!to || !from || bytes == 0) return true;
+    leonida::guarded::GuardScope guard;
+    return copy_guarded_frame(to, from, bytes, streaming);
 }
 
 // A 64-bit digest of the bytes of a texture the title keeps in its own memory, to tell whether they changed since its
@@ -274,13 +280,19 @@ __declspec(noinline) LEONIDA_GUARDED_NO_BUILTIN std::uint64_t hash_bytes(const s
     }
     return h;
 }
-bool hash_guarded(const std::uint8_t* p, std::size_t bytes, std::uint64_t& out, bool every_byte = false) {
+static bool hash_guarded_frame(const std::uint8_t* p, std::size_t bytes, std::uint64_t& out, bool every_byte) {
     __try {
         out = hash_bytes(p, bytes, every_byte);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+bool hash_guarded(const std::uint8_t* p, std::size_t bytes, std::uint64_t& out, bool every_byte = false) {
+    if (!p || bytes == 0) return false;
+    leonida::guarded::GuardScope guard;
+    return hash_guarded_frame(p, bytes, out, every_byte);
 }
 inline std::uint64_t hashed_bytes(std::uint64_t bytes, bool every_byte = false) {
     return bytes <= (256u << 10) || every_byte ? bytes : bytes / 32 + 64;
@@ -15495,10 +15507,14 @@ public:
             }
             std::uint64_t hash = 0;
             if (!title_texture_readable(t)) return;
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(static_cast<std::uintptr_t>(t.cpu));
+            if (!bytes || !leonida::texture_memory_readable(static_cast<std::uintptr_t>(t.cpu), span)) {
+                t.memory.defer();
+                return;
+            }
             const bool full_mapped = async && always;
             checked += full_mapped ? span : hashed_bytes(span);
             ++stats.checked;
-            const auto* bytes = reinterpret_cast<const std::uint8_t*>(static_cast<std::uintptr_t>(t.cpu));
             const auto timed_hash = [&](std::uint64_t& out, bool all = false) {
                 const auto start = clock::now();
                 const bool ok = hash_guarded(bytes, std::size_t(span), out, all);
@@ -15512,7 +15528,8 @@ public:
                 const auto start = clock::now();
                 title_pass_ = false;
                 lock.unlock();
-                const bool ok = hash_guarded(bytes, std::size_t(span), hash, true);
+                const bool readable = leonida::texture_memory_readable(static_cast<std::uintptr_t>(t.cpu), span);
+                const bool ok = readable && hash_guarded(bytes, std::size_t(span), hash, true);
                 lock.lock();
                 title_pass_ = true;
                 stats.hash_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start).count();
