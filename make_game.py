@@ -77,7 +77,7 @@ from replace_retry import replace as replace_retry  # noqa: E402
 from stale_build import newer_sources  # noqa: E402
 
 VERSIONS = os.path.join(ROOT, "game")
-STAGES = ["check", "shaders", "assets", "runtime", "pipelines"]
+STAGES = ["check", "shaders", "shaderpack", "warm", "patches", "memprofile", "costs", "texpack", "assets", "runtime", "pipelines"]
 WINDOWS_ONLY = ("runtime",)   # off Windows: the clang-cl + xwin cross-build, or --runtime-build
 CROSS_TOOLS = ("clang-cl", "lld-link", "llvm-lib", "llvm-rc", "llvm-mt")
 CROSS_VARS = {"C_COMPILER": "clang-cl", "CXX_COMPILER": "clang-cl", "LINKER": "lld-link", "AR": "llvm-lib",
@@ -2963,10 +2963,56 @@ def run_build_stages(stages: list, *, game: str, work: str, out: str, v: dict, w
     split = max(1, jobs // len(cpu_heavy)) if (overlap and len(cpu_heavy) > 1) else jobs
     dump_jobs = split if (overlap and len(cpu_heavy) > 1 and "assets" in stages) else None
     shader_jobs = split if (overlap and len(cpu_heavy) > 1 and "shaders" in stages) else jobs
-    progress = StageBoard([s for s in ("shaders", "assets", "runtime", "pipelines") if s in stages])
+    progress = StageBoard([s for s in STAGES if s in stages and s != "check"])
 
     def fn_shaders():
         shaders(game, work, shader_jobs, emulate=emulate, keep_emulated=keep_emulated, fallbacks=fallbacks)
+
+    def fn_shaderpack():
+        import shader_packer
+        import build_manifest
+        t_start = time.time()
+        pack_p, idx_p, count, payload_len = shader_packer.pack_shaders(
+            os.path.join(work, "shaders", "spirv"), out, enable_opt=True, verbose=True
+        )
+        bm = build_manifest.BuildManifest(os.path.join(out, "build_manifest.json"))
+        bm.record_stage("shaderpack", {"count": count, "bytes": payload_len}, [pack_p, idx_p], time.time() - t_start)
+
+    def fn_warm():
+        import pipeline_warmer
+        import build_manifest
+        t_start = time.time()
+        pipeline_warmer.warm_pipelines(os.path.join(out, "pipelines.manifest"), out, verbose=True)
+        bm = build_manifest.BuildManifest(os.path.join(out, "build_manifest.json"))
+        bm.record_stage("warm", {}, [os.path.join(out, "pipeline_cache.bin")], time.time() - t_start)
+
+    def fn_patches():
+        import patch_table_gen
+        import build_manifest
+        t_start = time.time()
+        exe_path = os.path.join(game, v.get("expected_exe", "game_scarlett_master.exe"))
+        out_tbl = os.path.join(out, "patches.tbl")
+        count = patch_table_gen.generate_patch_table(exe_path, out_tbl, verbose=True)
+        bm = build_manifest.BuildManifest(os.path.join(out, "build_manifest.json"))
+        bm.record_stage("patches", {"count": count}, [out_tbl], time.time() - t_start)
+
+    def fn_memprofile():
+        import memprofile_gen
+        import build_manifest
+        t_start = time.time()
+        out_bin = os.path.join(out, "memory_profile.bin")
+        count = memprofile_gen.generate_memory_profile(os.path.join(work, "sotm_memory.jsonl"), out_bin, verbose=True)
+        bm = build_manifest.BuildManifest(os.path.join(out, "build_manifest.json"))
+        bm.record_stage("memprofile", {"count": count}, [out_bin], time.time() - t_start)
+
+    def fn_costs():
+        import pass_costs
+        import build_manifest
+        t_start = time.time()
+        out_json = os.path.join(out, "passes.json")
+        pass_costs.generate_passes_catalogue(None, out_json, verbose=True)
+        bm = build_manifest.BuildManifest(os.path.join(out, "build_manifest.json"))
+        bm.record_stage("costs", {}, [out_json], time.time() - t_start)
 
     def fn_assets():
         assets(game, work, wav, jobs, dump_jobs=dump_jobs)
@@ -2979,6 +3025,11 @@ def run_build_stages(stages: list, *, game: str, work: str, out: str, v: dict, w
 
     builders = {
         "shaders": fn_shaders,
+        "shaderpack": fn_shaderpack,
+        "warm": fn_warm,
+        "patches": fn_patches,
+        "memprofile": fn_memprofile,
+        "costs": fn_costs,
         "assets": fn_assets,
         "runtime": fn_runtime,
         "pipelines": fn_pipelines,
@@ -3042,6 +3093,18 @@ def run_build_stages(stages: list, *, game: str, work: str, out: str, v: dict, w
                 failed = True
                 return False
 
+        if "patches" in stages:
+            futures["patches"] = ex.submit(_invoke_stage, "patches", fn_patches)
+        if "memprofile" in stages:
+            futures["memprofile"] = ex.submit(_invoke_stage, "memprofile", fn_memprofile)
+        if "costs" in stages:
+            futures["costs"] = ex.submit(_invoke_stage, "costs", fn_costs)
+
+        if "shaderpack" in stages:
+            shaders_ok = wait("shaders") if "shaders" in futures else True
+            if shaders_ok:
+                futures["shaderpack"] = ex.submit(_invoke_stage, "shaderpack", fn_shaderpack)
+
         if "pipelines" in stages:
             shaders_ok = wait("shaders") if "shaders" in futures else True
             if shaders_ok:
@@ -3051,6 +3114,12 @@ def run_build_stages(stages: list, *, game: str, work: str, out: str, v: dict, w
                 runtime_ok = wait("runtime") if "runtime" in futures else True
                 if runtime_ok:
                     futures["pipelines"] = ex.submit(_invoke_stage, "pipelines", fn_pipelines)
+
+        if "warm" in stages:
+            p_ok = wait("pipelines") if "pipelines" in futures else True
+            sp_ok = wait("shaderpack") if "shaderpack" in futures else True
+            if p_ok and sp_ok:
+                futures["warm"] = ex.submit(_invoke_stage, "warm", fn_warm)
 
         for name, fut in list(futures.items()):
             try:
@@ -3129,6 +3198,8 @@ def main() -> int:
                     help="keep s0..s31 in 128 push-constant bytes and move heap/code base to a set-1 uniform "
                          "block; on by itself when the runtime's GPU reports maxPushConstantsSize below what "
                          "the shaders need (144, or 152 with --mesh-compute)")
+    ap.add_argument("--check-artifacts", action="store_true",
+                    help="verify all offline artifact headers, keys, and payload hashes in --out; rebuilds nothing")
     ap.add_argument("--no-tui", action="store_true",
                     help="plain console logs (default when stdout is not a TTY); skip the LEONIDA setup screen "
                          "and per-stage log view")
@@ -3159,6 +3230,9 @@ def main() -> int:
     game = os.path.abspath(a.game or (pick_game() if a.pick else choose_game()))
     out = os.path.abspath(a.out or default_out())
     work = os.path.abspath(a.work or os.path.join(out, "work"))
+    if a.check_artifacts:
+        import build_manifest
+        return 0 if build_manifest.check_all_artifacts(out) else 1
     require_folder("--out", out)
     require_folder("--work", work)
     a.jobs = leonida_tui.clamp_jobs(a.jobs)
@@ -3256,7 +3330,7 @@ def main() -> int:
             log(note)
     log(f"building into {out} (work files in {work})")
     t0 = time.time()
-    build_stages = [s for s in ("shaders", "assets", "runtime", "pipelines") if s in stages]
+    build_stages = [s for s in STAGES if s in stages and s != "check"]
     if use_tui and build_stages:
         log_dir = os.path.join(work, "logs")
         with leonida_tui.LeonidaBoard(build_stages, log_dir) as tui_board:
