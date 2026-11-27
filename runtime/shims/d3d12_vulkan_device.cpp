@@ -15875,8 +15875,12 @@ public:
         stats.filled_bytes += filled;
         stats.max_pass_bytes = std::max(stats.max_pass_bytes, filled);
         std::vector<Resource*> release;
+        const auto retire_hold = (leonida::sotm::budget_config().evict &&
+                                  leonida::sotm::current_pressure() >= leonida::sotm::PressureTier::Critical)
+                                     ? std::chrono::milliseconds(1000)
+                                     : std::chrono::milliseconds(3000);
         std::erase_if(retired_title_textures_, [&](const auto& r) {
-            if (now - r.first < std::chrono::seconds(3)) return false;  // descriptors may still be in flight
+            if (now - r.first < retire_hold) return false;  // descriptors may still be in flight
             retired_backing_ -= r.second->image_backing_bytes();
             release.push_back(r.second);
             return true;
@@ -16453,18 +16457,18 @@ private:
         const auto& cfg = leonida::sotm::budget_config();
         if (!cfg.evict) return;
         static std::uint64_t last_sweep_ms = 0;
-        if (now_ms < last_sweep_ms + 200) return;
+        if (now_ms < last_sweep_ms + 150) return;
         last_sweep_ms = now_ms;
         const auto pressure = leonida::sotm::current_pressure(cfg);
         if (pressure == leonida::sotm::PressureTier::Normal) return;
-        std::uint64_t age_ms = 15000;
+        std::uint64_t age_ms = 12000;
         std::uint64_t max_evict = 32ull << 20;
         if (pressure == leonida::sotm::PressureTier::Critical) {
-            age_ms = 3000;
-            max_evict = 96ull << 20;
+            age_ms = 2000;
+            max_evict = 128ull << 20;
         } else if (pressure == leonida::sotm::PressureTier::OverBudget) {
-            age_ms = 750;
-            max_evict = 256ull << 20;
+            age_ms = 300;
+            max_evict = 512ull << 20;
         }
         struct Candidate {
             std::uint64_t last_used;

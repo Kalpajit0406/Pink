@@ -230,7 +230,7 @@ if ($Shaders) {
 $defaults = [ordered]@{
     LEONIDA_D3D12                     = "vulkan"
     LEONIDA_DEVICE_TYPE               = "6"            # Series S identity; the runtime answers the ConsoleMode registry read with it
-    LEONIDA_ARENA_MB                  = "1280"
+    LEONIDA_ARENA_MB                  = "1152"
     LEONIDA_PIPELINE_CACHE_BYTES      = "4294967296"
     LEONIDA_STARTUP_CACHE_CHECKPOINTS = "1"
     LEONIDA_PIPELINE_CACHE_DIR        = $(if ($env:LEONIDA_PIPELINE_CACHE_DIR) { $env:LEONIDA_PIPELINE_CACHE_DIR } else { (Join-Path (Split-Path -Parent $OutDir) "pipeline-cache") })
@@ -283,7 +283,7 @@ $defaults = [ordered]@{
     LEONIDA_MEM_RING_MB               = "128"
     LEONIDA_MEM_ALIAS_PLACED          = "1"
     LEONIDA_MEM_MIP_CAP               = "1"
-    LEONIDA_MEM_MIP_MAX_DIM           = "1024"
+    LEONIDA_MEM_MIP_MAX_DIM           = "512"
     LEONIDA_MEM_EVICT                 = "1"
     LEONIDA_MEM_TEXTURE_STAGE_MS      = "6"
     LEONIDA_MEM_HANDOFF               = "1"
