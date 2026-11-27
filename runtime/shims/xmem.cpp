@@ -48,6 +48,7 @@
 #include "../src/title_page_watch.h"
 #include "../src/title_geometry_watch.h"
 #include "../src/title_va_alias.h"
+#include "../src/sotm_accounting.h"
 #include "../src/value_write_sink.h"
 
 namespace {
@@ -136,6 +137,7 @@ void track_label_data(void* p,std::size_t bytes,bool heap) {
 // were uncommitted (which the readers query again at every look) after a free that the map recorded.
 void* title_block(size_t size) {
     void* p = allocate_block(size);
+    leonida::sotm::track_alloc(leonida::sotm::Category::GuestHeapCommitted, size ? size : 1);
     leonida::title_va_aliases().add_title_memory(reinterpret_cast<uintptr_t>(p), size ? size : 1);
     track_label_data(p,size?size:1,true);
     return p;
@@ -145,6 +147,7 @@ void free_title_block(void* p) {
     if(p)leonida::label::memory().release_heap(reinterpret_cast<std::uintptr_t>(p));
     if (p) leonida::title_va_aliases().remove_title_memory(reinterpret_cast<uintptr_t>(p));
     const size_t size = block_size(p);
+    leonida::sotm::track_free(leonida::sotm::Category::GuestHeapCommitted, size ? size : 1);
     free_block(p);
     if (p) {
         const auto from = reinterpret_cast<uintptr_t>(p);
@@ -241,10 +244,15 @@ BOOL __stdcall XMemGetWorkingSetStatistics(uint32_t /*kind*/, void* stats) {
     PROCESS_MEMORY_COUNTERS pmc{};
     if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return FALSE;
 
+    char profile[32]{};
+    const DWORD prof_n = GetEnvironmentVariableA("LEONIDA_CONSOLE_PROFILE", profile, sizeof(profile));
+    const bool is_series_s = prof_n > 0 && prof_n < sizeof(profile) && _stricmp(profile, "series-s") == 0;
+    const uint64_t default_budget = is_series_s ? (8ULL * 1024 * 1024 * 1024) : (10ULL * 1024 * 1024 * 1024);
+
     MEMORYSTATUSEX ms{sizeof(ms)};
-    uint64_t total_memory = 10ULL * 1024 * 1024 * 1024;  // 10 GiB Xbox title budget (out of 16 GiB unified)
+    uint64_t total_memory = default_budget;
     if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys != 0) {
-        total_memory = (std::min)(ms.ullTotalPhys, 10ULL * 1024 * 1024 * 1024);
+        total_memory = (std::min)(ms.ullTotalPhys, default_budget);
     }
     // Optional override (matching XSystemGetAppMemoryUsageLimit) so memory-constrained hosts can cap title pools.
     char env[32]{};
@@ -790,6 +798,11 @@ void* WINAPI XMemVirtualAlloc(void* address, SIZE_T size, DWORD allocation_type,
     // The title's memory (src/title_va_alias.h). Never forgotten: a released range is no longer committed, which
     // the copy also checks.
     if (result) {
+        if (allocation_type & MEM_COMMIT) {
+            leonida::sotm::track_alloc(leonida::sotm::Category::GuestHeapCommitted, size);
+        } else if (allocation_type & MEM_RESERVE) {
+            leonida::sotm::track_alloc(leonida::sotm::Category::GuestHeapReserved, size);
+        }
         leonida::title_memory_map::changed(result, size);
         leonida::title_va_aliases().add_title_memory(reinterpret_cast<uintptr_t>(result), size);
         note_unwatched_change(address, size, allocation_type, false);
@@ -2232,6 +2245,11 @@ LPVOID WINAPI TitleVirtualAlloc(LPVOID address, SIZE_T size, DWORD allocation_ty
     LPVOID result =
         reserve_watched(type, address, size, [&](DWORD t) { return VirtualAlloc(address, size, t, host_prot); });
     if (result) {
+        if (allocation_type & MEM_COMMIT) {
+            leonida::sotm::track_alloc(leonida::sotm::Category::GuestHeapCommitted, size);
+        } else if (allocation_type & MEM_RESERVE) {
+            leonida::sotm::track_alloc(leonida::sotm::Category::GuestHeapReserved, size);
+        }
         leonida::title_memory_map::changed(result, size);
         leonida::title_va_aliases().add_title_memory(reinterpret_cast<uintptr_t>(result), size);
         note_unwatched_change(address, size, type, false);

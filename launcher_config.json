@@ -43,7 +43,13 @@
         "LEONIDA_KEYBOARD_PAD": "always",
         "LEONIDA_PRIORITY": "high",
         "LEONIDA_CAPTURE": "0",
-        "LEONIDA_PEEK_SECONDS": "5"
+        "LEONIDA_PEEK_SECONDS": "5",
+        "LEONIDA_MEM_REPORT": "5",
+        "LEONIDA_MEM_LAZY_COMMIT": "1",
+        "LEONIDA_MEM_STAGE_MB": "64",
+        "LEONIDA_MEM_RING_MB": "128",
+        "LEONIDA_MEM_ALIAS_PLACED": "1",
+        "LEONIDA_CONSOLE_PROFILE": "series-s"
       }
     },
     "balanced": {
@@ -73,7 +79,13 @@
         "LEONIDA_KEYBOARD_PAD": "always",
         "LEONIDA_PRIORITY": "high",
         "LEONIDA_CAPTURE": "0",
-        "LEONIDA_PEEK_SECONDS": "5"
+        "LEONIDA_PEEK_SECONDS": "5",
+        "LEONIDA_MEM_REPORT": "5",
+        "LEONIDA_MEM_LAZY_COMMIT": "1",
+        "LEONIDA_MEM_STAGE_MB": "64",
+        "LEONIDA_MEM_RING_MB": "128",
+        "LEONIDA_MEM_ALIAS_PLACED": "1",
+        "LEONIDA_CONSOLE_PROFILE": "series-s"
       }
     },
     "quality": {
@@ -103,7 +115,13 @@
         "LEONIDA_KEYBOARD_PAD": "always",
         "LEONIDA_PRIORITY": "high",
         "LEONIDA_CAPTURE": "0",
-        "LEONIDA_PEEK_SECONDS": "5"
+        "LEONIDA_PEEK_SECONDS": "5",
+        "LEONIDA_MEM_REPORT": "5",
+        "LEONIDA_MEM_LAZY_COMMIT": "1",
+        "LEONIDA_MEM_STAGE_MB": "64",
+        "LEONIDA_MEM_RING_MB": "128",
+        "LEONIDA_MEM_ALIAS_PLACED": "1",
+        "LEONIDA_CONSOLE_PROFILE": "series-s"
       }
     },
     "custom": {

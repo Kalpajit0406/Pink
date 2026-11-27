@@ -1,5 +1,6 @@
 #include "../src/shader_directory.h"
 #include "../src/nvidia_drs.h"
+#include "../src/sotm_accounting.h"
 // A Vulkan-backed ID3D12Device (PC ABI) for the Xbox-ABI device proxy (d3d12_xs_device.cpp) to forward to.
 // Implemented: queues, allocators, command lists, fences, descriptor heaps, render-target and depth-stencil views,
 // committed buffers and textures (1D, 1D arrays, 2D, multisampled 2D, 3D) and their 1/2/3 variants, allocation
@@ -5494,6 +5495,7 @@ struct DeviceState {
                 allocate.allocationSize = bytes;
                 allocate.memoryTypeIndex = i;
                 if (vk.vkAllocateMemory(info.device, &allocate, nullptr, &out) != VK_SUCCESS) out = VK_NULL_HANDLE;
+                else leonida::sotm::track_alloc(leonida::sotm::Category::Staging, bytes);
             }
             if (out) break;
         }
@@ -5520,6 +5522,7 @@ struct DeviceState {
         if (index < 0) {
             context->vk.vkDestroyBuffer(info.device, heap.input_buffer, nullptr);
             context->vk.vkFreeMemory(info.device, heap.input_memory, nullptr);
+            leonida::sotm::track_free(leonida::sotm::Category::Staging, heap.bytes);
             heap.input_buffer = VK_NULL_HANDLE;
             heap.input_memory = VK_NULL_HANDLE;
             return;
@@ -7603,6 +7606,13 @@ struct DeviceState {
                                  int(device_address));
             }
             if (allocated == VK_SUCCESS) {
+                if (dedicated_image != VK_NULL_HANDLE) {
+                    leonida::sotm::track_alloc(leonida::sotm::Category::TextureVram, requirements.size);
+                } else if (device_address) {
+                    leonida::sotm::track_alloc(leonida::sotm::Category::BufferVram, requirements.size);
+                } else {
+                    leonida::sotm::track_alloc(leonida::sotm::Category::Other, requirements.size);
+                }
                 if (chosen) *chosen = memory.memoryTypes[i].propertyFlags;
                 if (chosen_type) *chosen_type = i;
                 if (leonida::spilled_to_host(required, preferred, memory.memoryTypes[i].propertyFlags))
@@ -8929,6 +8939,7 @@ public:
                 info.pNext = &create.format_list;
             }
         }
+        if (heap_range_) info.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
         const std::uint32_t samples = info.samples;
         // Textures the CPU reads and writes (WriteToSubresource/ReadFromSubresource) copy on the host when they can.
         // (A D24 texture stored as D32 goes through the staged copy: the host copy would not convert. Nor would it
@@ -9094,6 +9105,24 @@ public:
                 // forces this branch on any GPU with force_host_transfer_retry.
                 bool retry = host_transfer_ &&
                              (requirements.memoryTypeBits == 0 || device_.info.force_host_transfer_retry);
+                // SOTM Component C6: Placed-resource texture aliasing (bind to parent heap's memory)
+                static const bool alias_placed_enabled = [] {
+                    const char* safe = std::getenv("LEONIDA_MEM_SAFE");
+                    if (safe && std::strcmp(safe, "1") == 0) return false;
+                    const char* v = std::getenv("LEONIDA_MEM_ALIAS_PLACED");
+                    return !v || std::strcmp(v, "0") != 0;
+                }();
+                if (alias_placed_enabled && heap_range_ && heap_range_->memory != VK_NULL_HANDLE) {
+                    const VkDeviceSize target_offset = heap_range_->offset + heap_offset_;
+                    if ((target_offset % requirements.alignment) == 0 &&
+                        ((1u << heap_range_->memory_type) & requirements.memoryTypeBits)) {
+                        if (vk.vkBindImageMemory(device_.info.device, image_, heap_range_->memory, target_offset) == VK_SUCCESS) {
+                            placed_in_heap_ = true;
+                            image_backing_bytes_ = requirements.size;
+                            break;
+                        }
+                    }
+                }
                 if (!(desc_.Flags & attachment) && !host_transfer_)
                     image_range_ = device_.allocate_image(requirements, memory_flags_);
                 if (image_range_) {
@@ -9986,6 +10015,15 @@ private:
     // A placed buffer's heap range, held as a D3D12 placed resource holds its heap: the app may release the heap
     // first, and the range must not go to another allocation while this buffer lives.
     std::shared_ptr<const leonida::TileHeapAllocation> heap_range_;
+    VkDeviceSize heap_offset_ = 0;
+    bool placed_in_heap_ = false;
+
+public:
+    void set_heap_placement(std::shared_ptr<const leonida::TileHeapAllocation> range, VkDeviceSize offset) {
+        heap_range_ = std::move(range);
+        heap_offset_ = offset;
+    }
+private:
 };
 
 // One immutable, host-zeroed BC image per exact view shape. It has the right sampled format, extent,
@@ -19010,6 +19048,9 @@ public:
         // create_texture makes for 1D, 2D and 3D alike (arrays and mips included), as for a committed texture.
         const VkDeviceSize placed_va = desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? heap->offset() + heap_offset : 0;
         auto* resource = new Resource(state_, *desc, heap->properties(), heap->flags(), placed_va);
+        if (!buffer && heap->arena_range()) {
+            resource->set_heap_placement(heap->arena_range(), heap_offset);
+        }
         if (from_xbox_d16s8) resource->mark_console_d16s8();
         resource->attach_device(identity());
         HRESULT hr = E_NOTIMPL;

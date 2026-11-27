@@ -47,4 +47,6 @@ __pycache__/
 *.bcph.stamp
 
 *.elf
+runtime/build_msvc/
+bin_publish/
 

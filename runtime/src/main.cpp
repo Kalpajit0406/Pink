@@ -43,6 +43,7 @@
 
 #include <cstring>
 #include "guarded_copy.h"
+#include "sotm_accounting.h"
 
 namespace {
 
@@ -444,10 +445,14 @@ static LONG WINAPI on_crash_veh(PEXCEPTION_POINTERS ep) {
 
     FILE* out_files[2] = { stderr, fopen("E:\\Leonida\\crash_dump.txt", "w") };
 
+    // SOTM Component C1: Memory report on crash
+    leonida::sotm::Accounting::instance().dump_report("C:\\Users\\DELL\\leonida-runs\\crash_memory.json", leonida::memory_figures::latest_vram());
+
     for (FILE* f : out_files) {
         if (!f) continue;
         std::fprintf(f, "\n=======================================================\n");
         std::fprintf(f, "[rt-crash] *** FATAL EXCEPTION 0x%08lX at %p ***\n", code, addr);
+        leonida::sotm::dump_mem_map(f);
 
         print_location(f, reinterpret_cast<uint64_t>(addr), base);
 
@@ -699,8 +704,21 @@ int wmain(int argc, wchar_t** argv) {
 #endif
 
     timeBeginPeriod(1);
-    std::atexit([] { timeEndPeriod(1); });
+    std::atexit([] {
+        leonida::sotm::Accounting::instance().stop_reporter();
+        timeEndPeriod(1);
+    });
     AddVectoredExceptionHandler(1, &on_crash_veh);
+
+    // SOTM Component C1 / C12: Memory Telemetry & Accounting
+    {
+        char report_sec[16]{};
+        const DWORD n = GetEnvironmentVariableA("LEONIDA_MEM_REPORT", report_sec, sizeof(report_sec));
+        int sec = (n > 0 && n < sizeof(report_sec)) ? std::atoi(report_sec) : 5;
+        if (sec > 0) {
+            leonida::sotm::Accounting::instance().start_reporter(sec, "C:\\Users\\DELL\\leonida-runs\\sotm_memory.jsonl");
+        }
+    }
     std::filesystem::path image, game_dir, overlay_dir, mods_dir;
     uint32_t archetype_lookup_rva = 0;  // --archetype-lookup RVA[,ARG]: the game's archetype lookup by hash
     int archetype_lookup_arg = 0;

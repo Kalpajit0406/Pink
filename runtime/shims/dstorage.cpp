@@ -43,6 +43,7 @@
 #include "../src/dstorage_hold.h"
 #include "dstorage_xs_abi.h"
 #include "dstorage_staging.h"
+#include "../src/sotm_page_table.h"
 #include "startup_trace.h"
 #include "xmem.h"
 #include "shims.h"
@@ -1233,7 +1234,23 @@ private:
     // A request that wrote its destination tells the D3D12 layer, whose images of textures in that memory are filled
     // from it (title_texel_writes).
     static HRESULT written(const DSTORAGE_REQUEST& r, HRESULT hr) {
-        if (SUCCEEDED(hr)) leonida::title_texel_writes::note(cpu_destination(r), r.DestinationSize);
+        if (SUCCEEDED(hr)) {
+            leonida::title_texel_writes::note(cpu_destination(r), r.DestinationSize);
+            const uint64_t opt = r.Options.AsUINT64;
+            const uint16_t codec = (opt & 0xF0) ? 1 : 0;
+            uint32_t file_id = 0;
+            if (r.File) {
+                file_id = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r.File) & 0xFFFFFFFF);
+            }
+            leonida::sotm::page_table().record_provenance(
+                reinterpret_cast<uintptr_t>(cpu_destination(r)),
+                r.DestinationSize,
+                file_id,
+                r.FileOffset,
+                r.SourceSize,
+                codec
+            );
+        }
         return hr;
     }
 

@@ -791,6 +791,16 @@ if(BUILD_TESTING)
     endif()
     target_link_libraries(title_hud_test PRIVATE Vulkan::Headers user32 psapi)
     add_test(NAME title_hud COMMAND title_hud_test)
+
+    # Single-Owner Tiered Memory (SOTM) accounting and page table tests.
+    add_executable(sotm_test test/sotm_test.cpp)
+    target_include_directories(sotm_test PRIVATE src)
+    target_compile_definitions(sotm_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    if(MSVC)
+      target_compile_options(sotm_test PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    target_link_libraries(sotm_test PRIVATE psapi)
+    add_test(NAME sotm COMMAND sotm_test)
   endif()
 
   # LEONIDA_DEV_OVERLAY's text and the phase bookkeeping behind it (src/dev_overlay.h): no window, GPU or game file.

@@ -269,6 +269,12 @@ $defaults = [ordered]@{
     LEONIDA_TITLE_WINDOWS_MB          = "256"
     LEONIDA_GATE_PAUSE_CAP_MS         = "1000"
     LEONIDA_MIRROR_EXACT              = "1"
+    LEONIDA_MEM_REPORT                = "5"
+    LEONIDA_MEM_LAZY_COMMIT           = "1"
+    LEONIDA_MEM_STAGE_MB              = "64"
+    LEONIDA_MEM_RING_MB               = "128"
+    LEONIDA_MEM_ALIAS_PLACED          = "1"
+    LEONIDA_CONSOLE_PROFILE           = "series-s"
 }
 $histCandidate = "E:\Leonida\work\bcpack\history.bcph"
 if (Test-Path -LiteralPath $histCandidate -PathType Leaf) {

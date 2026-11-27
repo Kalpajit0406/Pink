@@ -706,6 +706,11 @@ HRESULT __stdcall XSystemGetConsoleId(size_t size, char* out, size_t* used) {
 // optionally overridden by LEONIDA_TITLE_MEMORY_MB (clamped to 2048..65536 MiB) so constrained hosts can prevent
 // the title from sizing pools above what the machine can hold.
 uint64_t __stdcall XSystemGetAppMemoryUsageLimit() {
+    char profile[32]{};
+    const DWORD prof_n = GetEnvironmentVariableA("LEONIDA_CONSOLE_PROFILE", profile, sizeof(profile));
+    const bool is_series_s = prof_n > 0 && prof_n < sizeof(profile) && _stricmp(profile, "series-s") == 0;
+    const uint64_t default_budget = is_series_s ? (8ULL * 1024 * 1024 * 1024) : (10ULL * 1024 * 1024 * 1024);
+
     char env[32]{};
     const DWORD n = GetEnvironmentVariableA("LEONIDA_TITLE_MEMORY_MB", env, sizeof(env));
     if (n > 0 && n < sizeof(env) && env[0] != '-' && env[0] != '+') {
@@ -719,8 +724,8 @@ uint64_t __stdcall XSystemGetAppMemoryUsageLimit() {
         }
     }
     MEMORYSTATUSEX ms{sizeof(ms)};
-    if (GlobalMemoryStatusEx(&ms)) return (std::min)(ms.ullTotalPhys, 10ULL * 1024 * 1024 * 1024);
-    return 10ULL * 1024 * 1024 * 1024;
+    if (GlobalMemoryStatusEx(&ms)) return (std::min)(ms.ullTotalPhys, default_budget);
+    return default_budget;
 }
 
 // uint64_t XSystemGetAppMemoryUsage()
