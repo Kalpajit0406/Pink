@@ -4,6 +4,8 @@
 
 #include "dstorage_xs_abi.h"
 #include "../src/dstorage_trace.h"
+#include "../src/sotm_accounting.h"
+#include "../src/sotm_budget.h"
 #include <algorithm>
 #include <condition_variable>
 #include <cstdint>
@@ -34,7 +36,7 @@ inline uint64_t staging_bytes(const dsx::DSTORAGE_REQUEST& r) {
 
 class StagingPool {
 public:
-    static constexpr uint64_t limit = 64ull << 20;
+    static uint64_t limit_bytes() { return leonida::sotm::budget_config().stage_bytes; }
     // Requests above the shared window run alone. The validated ABI sizes bound
     // one transform to two 1 GiB buffers. No payload is allocated by the pool itself.
     class Lease {
@@ -45,8 +47,9 @@ public:
 
         bool try_pair(uint64_t bytes) {
             std::lock_guard lock(pool_.mutex_);
+            const uint64_t lim = limit_bytes();
             if (pool_.helpers_ >= 2 || pool_.next_ != pool_.serving_ ||
-                bytes > limit || pool_.used_ > limit - bytes) return false;
+                bytes > lim || pool_.used_ > lim - bytes) return false;
             ++pool_.helpers_;
             pair_ = true;
             take(bytes);
@@ -55,10 +58,11 @@ public:
         void acquire(uint64_t bytes) {
             if (!bytes) return;
             std::unique_lock lock(pool_.mutex_);
+            const uint64_t lim = limit_bytes();
             const uint64_t ticket = pool_.next_++;
             pool_.changed_.wait(lock, [&] {
                 return ticket == pool_.serving_ && (!pool_.used_ ||
-                       (bytes <= limit && pool_.used_ <= limit - bytes));
+                       (bytes <= lim && pool_.used_ <= lim - bytes));
             });
             take(bytes);
             ++pool_.serving_;
@@ -66,6 +70,7 @@ public:
         }
         ~Lease() {
             if (!bytes_ && !pair_) return;
+            if (bytes_) leonida::sotm::track_free(leonida::sotm::Category::Staging, bytes_);
             std::lock_guard lock(pool_.mutex_);
             pool_.used_ -= bytes_;
             if (pair_) --pool_.helpers_;
@@ -78,10 +83,11 @@ public:
     private:
         void take(uint64_t bytes) {
             bytes_ = bytes;
+            leonida::sotm::track_alloc(leonida::sotm::Category::Staging, bytes);
             pool_.used_ += bytes;
             if (pool_.used_ > pool_.peak_) {
                 pool_.peak_ = pool_.used_;
-                if (trace_enabled()) std::fprintf(stderr, "[rt] ds-staging peak_bytes=%llu limit_bytes=%llu\n", pool_.peak_, limit);
+                if (trace_enabled()) std::fprintf(stderr, "[rt] ds-staging peak_bytes=%llu limit_bytes=%llu\n", pool_.peak_, limit_bytes());
             }
         }
         StagingPool& pool_;

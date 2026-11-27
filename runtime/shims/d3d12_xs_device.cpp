@@ -43,6 +43,8 @@
 #include "../src/local_diagnostics.h"
 #include "d3d12_xs_pso_stream.h"
 #include "../src/shader_library.h"  // leonida::fspx_payload_from_parts for slot 67
+#include "../src/sotm_accounting.h"
+#include "../src/sotm_budget.h"
 #include "../src/title_page_watch.h"  // leonida::kernel_writes for slot 14
 
 #ifdef LEONIDA_VULKAN_DEVICE
@@ -188,6 +190,7 @@ bool call_presentation(DeviceProxy* self, F&& f) {
 // Freed in proxy_release; defined where the states are complete.
 void destroy_present_state(void* present_state);
 void destroy_upload_state(void* upload_state);
+void upload_on_present(DeviceProxy* device, void* real_queue);
 
 constexpr unsigned kHeapSlots = 11;  // IUnknown + ID3D12Object + DeviceChild + Pageable + GetDesc + 2 handles
 
@@ -1971,6 +1974,7 @@ std::uint64_t queue_present_x(ChildProxy* self, std::uint64_t plane_count, std::
     const HRESULT result = state->xbox->PresentX(
         static_cast<UINT>(plane_count), reinterpret_cast<const rt::d3d12::XboxPresentPlaneParameters*>(planes),
         reinterpret_cast<const rt::d3d12::XboxPresentParameters*>(params));
+    if (self->device && self->real) upload_on_present(self->device, self->real);
     if (SUCCEEDED(result) && state->hud) state->hud->note_present();
     return hr_to_u64(result);
 }
@@ -2840,14 +2844,42 @@ struct UploadChunk {
     D3D12_GPU_VIRTUAL_ADDRESS gpu_base;
     std::size_t size;
     std::size_t used;
+    std::uint64_t retired_seq;     // 0 = active/free for current frame, >0 = signaled present seq
 };
 
 struct UploadArena {
     UploadChunk* chunks = nullptr;
+    ID3D12Fence* fence = nullptr;
+    std::uint64_t present_seq = 0;
+    std::size_t total_bytes = 0;
     std::mutex lock;
 };
 
 constexpr std::size_t kUploadChunkMin = 8 << 20;  // one chunk serves a title's whole frame of uploads
+
+void upload_chunk_free(UploadChunk* chunk) {
+    if (!chunk) return;
+    if (chunk->resource) {
+        chunk->resource->Unmap(0, nullptr);
+        chunk->resource->Release();
+    } else {
+        leonida::sotm::Accounting::instance().track_free(leonida::sotm::Category::UploadRing, chunk->size);
+        VirtualFree(chunk->cpu_base, 0, MEM_RELEASE);
+    }
+    delete chunk;
+}
+
+void upload_recycle_completed(UploadArena* arena) {
+    if (!arena || !arena->fence) return;
+    const std::uint64_t done = arena->fence->GetCompletedValue();
+    if (done == UINT64_MAX) return;
+    for (UploadChunk* chunk = arena->chunks; chunk; chunk = chunk->next) {
+        if (chunk->retired_seq != 0 && chunk->retired_seq + 1 <= done) {
+            chunk->used = 0;
+            chunk->retired_seq = 0;
+        }
+    }
+}
 
 UploadChunk* upload_chunk_new(DeviceProxy* device, std::size_t size) {
     auto* chunk = new (std::nothrow) UploadChunk{};
@@ -2885,6 +2917,7 @@ UploadChunk* upload_chunk_new(DeviceProxy* device, std::size_t size) {
         delete chunk;
         return nullptr;
     }
+    leonida::sotm::Accounting::instance().track_alloc(leonida::sotm::Category::UploadRing, size);
     chunk->cpu_base = cpu_fallback;
     chunk->gpu_base = reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(cpu_fallback);
     return chunk;
@@ -2916,8 +2949,10 @@ std::uint64_t upload_alloc(DeviceProxy* device, std::uint64_t size, std::uint64_
         }
     }
     std::lock_guard<std::mutex> lock(arena->lock);
+    upload_recycle_completed(arena);
     const std::size_t need = static_cast<std::size_t>(size);
     for (UploadChunk* chunk = arena->chunks; chunk; chunk = chunk->next) {
+        if (chunk->retired_seq != 0) continue;
         const std::size_t aligned = (chunk->used + (alignment - 1)) & ~(static_cast<std::size_t>(alignment) - 1);
         if (aligned >= chunk->used && aligned <= chunk->size && need <= chunk->size - aligned) {
             chunk->used = aligned + need;
@@ -2933,9 +2968,47 @@ std::uint64_t upload_alloc(DeviceProxy* device, std::uint64_t size, std::uint64_
     }
     chunk->next = arena->chunks;
     arena->chunks = chunk;
+    arena->total_bytes += chunk->size;
     const std::size_t aligned = (alignment - 1) & ~(static_cast<std::size_t>(alignment) - 1);  // 0-based
     chunk->used = aligned + need;
     return reinterpret_cast<std::uint64_t>(chunk->cpu_base + aligned);
+}
+
+void upload_on_present(DeviceProxy* device, void* real_queue) {
+    if (!device || !real_queue) return;
+    auto* arena = static_cast<UploadArena*>(device->upload_state.load(std::memory_order_acquire));
+    if (!arena) return;
+    std::lock_guard<std::mutex> lock(arena->lock);
+    if (!arena->fence && device->real) {
+        if (FAILED(device->real->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence),
+                                             reinterpret_cast<void**>(&arena->fence)))) {
+            arena->fence = nullptr;
+        }
+    }
+    if (!arena->fence) return;
+    const std::uint64_t seq = ++arena->present_seq;
+    for (UploadChunk* chunk = arena->chunks; chunk; chunk = chunk->next) {
+        if (chunk->used > 0 && chunk->retired_seq == 0) {
+            chunk->retired_seq = seq;
+        }
+    }
+    auto* queue = static_cast<ID3D12CommandQueue*>(real_queue);
+    queue->Signal(arena->fence, seq);
+    upload_recycle_completed(arena);
+    const std::size_t ring_cap = static_cast<std::size_t>(leonida::sotm::budget_config().ring_bytes);
+    if (arena->total_bytes > ring_cap) {
+        UploadChunk** link = &arena->chunks;
+        while (*link && arena->total_bytes > ring_cap) {
+            UploadChunk* c = *link;
+            if (c->retired_seq == 0 && c->used == 0 && arena->total_bytes - c->size >= kUploadChunkMin) {
+                *link = c->next;
+                arena->total_bytes -= c->size;
+                upload_chunk_free(c);
+            } else {
+                link = &c->next;
+            }
+        }
+    }
 }
 
 // An address inside an upload chunk becomes the chunk's device address plus the offset; anything else — a
@@ -2955,15 +3028,13 @@ std::uint64_t upload_translate(DeviceProxy* device, std::uint64_t va) {
 void destroy_upload_state(void* upload_state) {
     auto* arena = static_cast<UploadArena*>(upload_state);
     if (!arena) return;
+    if (arena->fence) {
+        arena->fence->Release();
+        arena->fence = nullptr;
+    }
     for (UploadChunk* chunk = arena->chunks; chunk;) {
         UploadChunk* next = chunk->next;
-        if (chunk->resource) {
-            chunk->resource->Unmap(0, nullptr);
-            chunk->resource->Release();
-        } else {
-            VirtualFree(chunk->cpu_base, 0, MEM_RELEASE);
-        }
-        delete chunk;
+        upload_chunk_free(chunk);
         chunk = next;
     }
     delete arena;

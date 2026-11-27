@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <iostream>
 #include "../src/sotm_accounting.h"
+#include "../src/sotm_budget.h"
 #include "../src/sotm_page_table.h"
 
 int main() {
@@ -84,7 +85,29 @@ int main() {
     assert(stats.both_dirty == 1);
     assert(stats.both_clean == 3);
 
-    std::printf("[test] Page table passed: 1 dirty, 3 clean, stats valid.\n");
+    // Budget pressure & adaptive mip ceiling tests
+    leonida::sotm::BudgetConfig bcfg{};
+    bcfg.max_vram_bytes = 5000ull << 20;
+    bcfg.max_host_ram_bytes = 16000ull << 20;
+    bcfg.mip_max_normal = 1024;
+    leonida::VramBudget vb{};
+    vb.available = true;
+    vb.local_budget = 6000ull << 20;  // min(5000, 6000) = 5000 MB effective
+    vb.local_usage = 2000ull << 20;
+    assert(leonida::sotm::evaluate_pressure(vb, 8000ull << 20, bcfg) == leonida::sotm::PressureTier::Normal);
+    vb.local_usage = 3600ull << 20;  // 72%
+    assert(leonida::sotm::evaluate_pressure(vb, 8000ull << 20, bcfg) == leonida::sotm::PressureTier::Elevated);
+    vb.local_usage = 4300ull << 20;  // 86%
+    assert(leonida::sotm::evaluate_pressure(vb, 8000ull << 20, bcfg) == leonida::sotm::PressureTier::Critical);
+    vb.local_usage = 2000ull << 20;
+    assert(leonida::sotm::evaluate_pressure(vb, 15500ull << 20, bcfg) == leonida::sotm::PressureTier::OverBudget);
+
+    assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Normal, 1024) == 2);
+    assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Elevated, 1024) == 3);
+    assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Critical, 1024) == 4);
+    assert(leonida::sotm::choose_first_mip(4096, 4096, 1, leonida::sotm::PressureTier::OverBudget, 1024) == 0);
+
+    std::printf("[test] Page table and budget pressure tests passed.\n");
     std::printf("[test] All SOTM unit tests passed successfully!\n");
     return 0;
 }

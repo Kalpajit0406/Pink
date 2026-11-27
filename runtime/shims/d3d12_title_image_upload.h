@@ -2,6 +2,7 @@
 
 #include "xg_xs_layout.h"
 #include "../src/vulkan_backend.h"
+#include "../src/sotm_accounting.h"
 
 namespace rt::d3d12 {
 
@@ -38,22 +39,25 @@ public:
     template<class Device>
     bool write(Device& d, leonida::ResourceId id, const leonida::ResourceBinding& image,
                const xg_xs::Texture& layout, const std::uint8_t* tiled, std::vector<std::uint64_t>& columns,
-               bool inspect, bool& nonzero) {
+               bool inspect, bool& nonzero, std::uint32_t first_mip = 0) {
         const auto block = leonida::copy_block_format(image, VK_IMAGE_ASPECT_COLOR_BIT);
-        const auto mips = layout.layout.mips;
+        const auto src_mips = layout.layout.mips;
         const auto layers = layout.array;
+        if (first_mip >= src_mips) return false;
+        const auto mips = src_mips - first_mip;
         if (!block.bytes || block.bytes != layout.format.bytes || !mips || mips > image.mip_levels ||
             !layers || layers > image.array_layers) return false;
 
         regions_.clear();
         VkDeviceSize bytes = 0;
         for (unsigned layer = 0; layer < layers; ++layer) {
-            for (unsigned level = 0; level < mips; ++level) {
-                const auto& mip = layout.layout.plane[0].mips[level];
+            for (unsigned dst_level = 0; dst_level < mips; ++dst_level) {
+                const unsigned src_level = first_mip + dst_level;
+                const auto& mip = layout.layout.plane[0].mips[src_level];
                 VkBufferImageCopy copy{};
-                copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
-                copy.imageExtent = {std::max(1u, image.width >> level), std::max(1u, image.height >> level),
-                                    image.volume ? std::max(1u, image.depth >> level) : 1u};
+                copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst_level, layer, 1};
+                copy.imageExtent = {std::max(1u, image.width >> dst_level), std::max(1u, image.height >> dst_level),
+                                    image.volume ? std::max(1u, image.depth >> dst_level) : 1u};
                 if (mip.width_elements != (copy.imageExtent.width + block.block - 1) / block.block ||
                     mip.height_elements != (copy.imageExtent.height + block.block - 1) / block.block ||
                     (image.volume && mip.depth != copy.imageExtent.depth)) return false;
@@ -71,11 +75,11 @@ public:
         if (!prepare(d, slot, bytes)) return false;
         next_ = (next_ + 1) % kSlots;
         for (const auto& copy : regions_) {
-            const auto level = copy.imageSubresource.mipLevel;
-            const auto& mip = layout.layout.plane[0].mips[level];
+            const auto src_level = first_mip + copy.imageSubresource.mipLevel;
+            const auto& mip = layout.layout.plane[0].mips[src_level];
             const auto row = mip.width_elements * block.bytes, slice = row * mip.height_elements;
             auto* dst = slot.mapped + copy.bufferOffset;
-            xg_xs::copy_elements<false>(layout, level, copy.imageSubresource.baseArrayLayer, tiled, dst, row, slice, columns);
+            xg_xs::copy_elements<false>(layout, src_level, copy.imageSubresource.baseArrayLayer, tiled, dst, row, slice, columns);
             if (inspect && !nonzero)
                 nonzero = std::any_of(dst, dst + VkDeviceSize(slice) * copy.imageExtent.depth,
                                       [](std::uint8_t c) { return c != 0; });
@@ -149,7 +153,10 @@ private:
     void release_buffer(Device& d, Slot& slot) {
         auto& vk = d.context->vk;
         if (slot.buffer) vk.vkDestroyBuffer(d.info.device, slot.buffer, nullptr);
-        if (slot.memory) vk.vkFreeMemory(d.info.device, slot.memory, nullptr);
+        if (slot.memory) {
+            leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(slot.memory));
+            vk.vkFreeMemory(d.info.device, slot.memory, nullptr);
+        }
         slot.buffer = VK_NULL_HANDLE;
         slot.memory = VK_NULL_HANDLE;
         slot.mapped = nullptr;
@@ -193,7 +200,8 @@ private:
         if (vk.vkCreateBuffer(dev, &buffer, nullptr, &slot.buffer) != VK_SUCCESS) return false;
         VkMemoryRequirements req{};
         vk.vkGetBufferMemoryRequirements(dev, slot.buffer, &req);
-        slot.memory = d.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+        slot.memory = d.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0,
+                                 nullptr, false, nullptr, VK_NULL_HANDLE, leonida::sotm::Category::Staging);
         void* map = nullptr;
         if (!slot.memory || vk.vkBindBufferMemory(dev, slot.buffer, slot.memory, 0) != VK_SUCCESS ||
             vk.vkMapMemory(dev, slot.memory, 0, VK_WHOLE_SIZE, 0, &map) != VK_SUCCESS) {

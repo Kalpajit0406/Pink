@@ -1,6 +1,7 @@
 #include "../src/shader_directory.h"
 #include "../src/nvidia_drs.h"
 #include "../src/sotm_accounting.h"
+#include "../src/sotm_budget.h"
 // A Vulkan-backed ID3D12Device (PC ABI) for the Xbox-ABI device proxy (d3d12_xs_device.cpp) to forward to.
 // Implemented: queues, allocators, command lists, fences, descriptor heaps, render-target and depth-stencil views,
 // committed buffers and textures (1D, 1D arrays, 2D, multisampled 2D, 3D) and their 1/2/3 variants, allocation
@@ -8348,9 +8349,11 @@ public:
     bool replay_seen() const { return replay_seen_.load(std::memory_order_relaxed); }
     bool staged_title() const { return staged_title_; }
     bool upload_staged_title(const rt::xg_xs::Texture& layout, const std::uint8_t* tiled,
-                             std::vector<std::uint64_t>& columns, bool inspect, bool& nonzero) {
+                             std::vector<std::uint64_t>& columns, bool inspect, bool& nonzero,
+                             std::uint32_t first_mip = 0) {
         std::lock_guard lock(device_.title_upload_mutex);
-        return device_.title_upload.write(device_, id(), binding_, layout, tiled, columns, inspect, nonzero);
+        return device_.title_upload.write(device_, id(), binding_, layout, tiled, columns, inspect, nonzero,
+                                          first_mip);
     }
     // Map and the destructor notify the registry for a slot-133 placement.
     void mark_title_texture() { title_texture_ = true; }
@@ -13584,6 +13587,8 @@ struct TitleTexture {
     std::uint64_t full_hash = 0;
     bool full_hashed = false;
     bool every_byte() const { return mapped && (async_texture_refresh() || layout.layout.size <= (4u << 20)); }
+    std::uint32_t first_mip = 0;
+    std::uint64_t last_used_ms = 0;
     std::uint64_t fills = 0;
 };
 
@@ -16205,15 +16210,23 @@ private:
 
     // The image a layout fills: the same extent, mips, layers and element (texel or 4x4 block) size.
     static bool title_layout_fits(const rt::xg_xs::Texture& layout, const rt::xg_xs::ResourceDesc& d,
-                                  const Resource& r, const char*& why) {
+                                  const Resource& r, const char*& why, std::uint32_t first_mip = 0) {
         const D3D12_RESOURCE_DESC& desc = r.desc();
         const leonida::BlockFormat element = r.copy_element();
-        if (desc.Width != d.width || desc.Height != d.height || desc.DepthOrArraySize != d.depth_or_array ||
-            desc.MipLevels != layout.layout.mips || UINT(desc.Dimension) != d.dimension)
+        const std::uint64_t exp_w = first_mip ? (std::max)(std::uint64_t(1), d.width >> first_mip) : d.width;
+        const std::uint32_t exp_h = first_mip ? (std::max)(1u, d.height >> first_mip) : d.height;
+        const std::uint32_t exp_mips = layout.layout.mips > first_mip ? layout.layout.mips - first_mip : 1;
+        if (desc.Width != exp_w || desc.Height != exp_h || desc.DepthOrArraySize != d.depth_or_array ||
+            desc.MipLevels != exp_mips || UINT(desc.Dimension) != d.dimension)
             return why = "texture of another extent, mips or layers at the address", false;
         if (element.bytes != layout.format.bytes || element.block != layout.format.side)
             return why = "image element differs from the console's", false;
         return true;
+    }
+
+    static std::uint64_t steady_now_ms() {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     }
 
     // Caller holds title_texture_mutex, which the registered resource takes before destruction.
@@ -16229,8 +16242,9 @@ private:
                           const D3D12_SHADER_RESOURCE_VIEW_DESC& srv, std::uint64_t address,
                           D3D12_CPU_DESCRIPTOR_HANDLE destination) {
         if (!address) return refuse_title_view("no address", d, address);
-        const auto write = [&](const TitleTexture& t) {
-            const bool written = write_title_srv(*t.resource, srv, destination, d, address);
+        const auto write = [&](TitleTexture& t) {
+            t.last_used_ms = steady_now_ms();
+            const bool written = write_title_srv(*t.resource, srv, destination, d, address, t.first_mip);
             if (written && !t.gpu_written && t.memory.pending()) ++title_stats_.pending_views;
             return written;
         };
@@ -16249,7 +16263,7 @@ private:
             if (!t->gpu_written && (t->layout_guessed || t->layout_from_xg || !t->layout_known || t->desc != words)) {
                 const char* why = nullptr;
                 rt::xg_xs::Texture layout;
-                if (title_layout(d, layout, why) && title_layout_fits(layout, d, *t->resource, why)) {
+                if (title_layout(d, layout, why) && title_layout_fits(layout, d, *t->resource, why, t->first_mip)) {
                     static std::atomic<int> logged{0};
                     if (t->mapped && logged.fetch_add(1, std::memory_order_relaxed) < 32)
                         std::fprintf(stderr,
@@ -16330,12 +16344,20 @@ private:
                 return refuse_title_view("view format of another element size", d, address), nullptr;
             add(srv.Format);
         }
+        const auto& cfg = leonida::sotm::budget_config();
+        std::uint32_t first_mip = 0;
+        if (cfg.mip_cap && d.dimension == xg::kTexture2D && entry->layout.layout.mips > 1) {
+            first_mip = leonida::sotm::choose_first_mip(
+                static_cast<std::uint32_t>(d.width), d.height, entry->layout.layout.mips,
+                leonida::sotm::current_pressure(cfg), cfg.mip_max_normal);
+        }
+        entry->first_mip = first_mip;
         D3D12_RESOURCE_DESC pc{};
         pc.Dimension = D3D12_RESOURCE_DIMENSION(d.dimension);
-        pc.Width = d.width;
-        pc.Height = d.height;
+        pc.Width = first_mip ? (std::max)(std::uint64_t(1), d.width >> first_mip) : d.width;
+        pc.Height = first_mip ? (std::max)(1u, d.height >> first_mip) : d.height;
         pc.DepthOrArraySize = d.depth_or_array;
-        pc.MipLevels = UINT16(entry->layout.layout.mips);
+        pc.MipLevels = UINT16(entry->layout.layout.mips > first_mip ? entry->layout.layout.mips - first_mip : 1);
         pc.Format = formats.front();
         pc.SampleDesc = {1, 0};
         pc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -16362,9 +16384,19 @@ private:
             log_once("an image for a slot-70 texture view could not be made; HRESULT", int(hr));
             return refuse_title_view("image not created", d, address), nullptr;
         }
-        if (!title_layout_fits(entry->layout, d, *r, why)) {
+        if (!title_layout_fits(entry->layout, d, *r, why, first_mip)) {
             r->Release();
             return refuse_title_view(why, d, address), nullptr;
+        }
+        if (first_mip > 0) {
+            std::uint64_t dropped = 0;
+            const bool vol = entry->layout.layout.dimension == xg::kTexture3D;
+            for (std::uint32_t lvl = 0; lvl < first_mip && lvl < entry->layout.layout.mips; ++lvl) {
+                const auto& mip = entry->layout.layout.plane[0].mips[lvl];
+                dropped += std::uint64_t(mip.width_elements) * mip.height_elements * entry->layout.format.bytes *
+                           (vol ? mip.depth : 1u) * (std::max)(1u, entry->layout.array);
+            }
+            leonida::sotm::Accounting::instance().track_mip_cap(dropped);
         }
         r->place_at_title_address(reinterpret_cast<void*>(static_cast<std::uintptr_t>(address)));
         entry->address = address;
@@ -16487,8 +16519,10 @@ private:
     std::uint64_t fill_title_texture(TitleTexture& t, bool staged) {
         const rt::xg_xs::Texture& layout = t.layout;
         const std::uint32_t mips = layout.layout.mips, slices = layout.array;
+        const std::uint32_t first_mip = t.first_mip < mips ? t.first_mip : 0;
+        const std::uint32_t img_mips = mips - first_mip;
         if (!staged && !t.unbound_bytes && !t.resource->staged_title())
-            for (UINT sub = 0; sub < mips * slices; ++sub)
+            for (UINT sub = 0; sub < img_mips * slices; ++sub)
                 if (!t.resource->host_copy_now(sub)) {
                     t.stale = true;
                     return 0;
@@ -16526,14 +16560,16 @@ private:
         bool ok = true;
         if (t.resource->staged_title()) {
             const auto start = std::chrono::steady_clock::now();
-            ok = t.resource->upload_staged_title(layout, title_tiled_.data(), title_columns_, trace_pool, nonzero);
+            ok = t.resource->upload_staged_title(layout, title_tiled_.data(), title_columns_, trace_pool, nonzero,
+                                                 first_mip);
             title_stats_.staged_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - start).count();
             if (ok) ++title_stats_.staged_fills;
             if (!ok) log_once("staged title texture upload failed, format", int(t.resource->format()));
         } else {
             for (std::uint32_t slice = 0; slice < slices && ok; ++slice) {
-                for (std::uint32_t level = 0; level < mips && ok; ++level) {
+                for (std::uint32_t dst_level = 0; dst_level < img_mips && ok; ++dst_level) {
+                    const std::uint32_t level = first_mip + dst_level;
                     const auto& mip = layout.layout.plane[0].mips[level];
                     const std::uint32_t row_pitch = mip.width_elements * layout.format.bytes;
                     const std::uint32_t slice_pitch = row_pitch * mip.height_elements;
@@ -16543,7 +16579,7 @@ private:
                     if (trace_pool && !nonzero)
                         nonzero = std::any_of(title_linear_.begin(), title_linear_.end(), [](auto byte) { return byte != 0; });
                     const HRESULT hr =
-                        t.resource->upload_title_subresource(level + slice * mips, title_linear_.data(), row_pitch,
+                        t.resource->upload_title_subresource(dst_level + slice * img_mips, title_linear_.data(), row_pitch,
                                                              slice_pitch, staged);
                     if (FAILED(hr)) {
                         log_once("a title texture's subresource could not be filled; HRESULT", int(hr));
@@ -16578,22 +16614,59 @@ private:
                (region.Protect & PAGE_WRITECOMBINE);
     }
 
+    static D3D12_SHADER_RESOURCE_VIEW_DESC adjust_srv_first_mip(D3D12_SHADER_RESOURCE_VIEW_DESC srv,
+                                                                std::uint32_t first_mip, UINT16 img_mips) {
+        if (!first_mip || !img_mips) return srv;
+        auto shift = [&](UINT& most, UINT& count) {
+            if (count != UINT(-1)) {
+                if (most + count <= first_mip) {
+                    most = 0;
+                    count = 1;
+                    return;
+                }
+                if (most < first_mip) count -= (first_mip - most);
+            }
+            most = most > first_mip ? (most - first_mip) : 0;
+            if (most >= img_mips) most = img_mips - 1;
+            if (count != UINT(-1) && most + count > img_mips) count = img_mips - most;
+        };
+        switch (srv.ViewDimension) {
+        case D3D12_SRV_DIMENSION_TEXTURE2D:
+            shift(srv.Texture2D.MostDetailedMip, srv.Texture2D.MipLevels);
+            break;
+        case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
+            shift(srv.Texture2DArray.MostDetailedMip, srv.Texture2DArray.MipLevels);
+            break;
+        case D3D12_SRV_DIMENSION_TEXTURECUBE:
+            shift(srv.TextureCube.MostDetailedMip, srv.TextureCube.MipLevels);
+            break;
+        case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY:
+            shift(srv.TextureCubeArray.MostDetailedMip, srv.TextureCubeArray.MipLevels);
+            break;
+        default:
+            break;
+        }
+        return srv;
+    }
+
     bool write_title_srv(Resource& r, const D3D12_SHADER_RESOURCE_VIEW_DESC& srv, D3D12_CPU_DESCRIPTOR_HANDLE dest,
-                         const rt::xg_xs::ResourceDesc& d, std::uint64_t address) {
-        CreateShaderResourceView(static_cast<ID3D12Resource*>(&r), &srv, dest);
+                         const rt::xg_xs::ResourceDesc& d, std::uint64_t address, std::uint32_t first_mip = 0) {
+        const D3D12_SHADER_RESOURCE_VIEW_DESC effective =
+            first_mip ? adjust_srv_first_mip(srv, first_mip, r.desc().MipLevels) : srv;
+        CreateShaderResourceView(static_cast<ID3D12Resource*>(&r), &effective, dest);
         const auto* w = reinterpret_cast<const std::uint32_t*>(dest.ptr);
         const auto written = [w] { return (w[0] | w[1] | w[2] | w[3] | w[4] | w[5] | w[6] | w[7]) != 0; };
         if (written()) return true;
         // A slot-133 texture made in a stand-in format (an R9G9B9E5 target as R11G11B10F, console_format_stand_ins)
         // has no view in the console format: the view in the texture's own format reads what it holds.
-        if (srv.Format != DXGI_FORMAT_UNKNOWN && srv.Format == r.desc().Format) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC own = srv;
+        if (effective.Format != DXGI_FORMAT_UNKNOWN && effective.Format == r.desc().Format) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC own = effective;
             own.Format = DXGI_FORMAT_UNKNOWN;
             CreateShaderResourceView(static_cast<ID3D12Resource*>(&r), &own, dest);
             if (written()) {
                 log_once("a slot-70 view in another format than its texture's reads it in the texture's own format; "
                          "view format",
-                         int(srv.Format));
+                         int(effective.Format));
                 return true;
             }
         }
