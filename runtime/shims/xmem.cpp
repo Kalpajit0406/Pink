@@ -1549,8 +1549,10 @@ bool view_covers(uintptr_t address) {
 bool commit_title_section_page(uintptr_t accessed) {
     MEMORY_BASIC_INFORMATION q{};
     if (!VirtualQuery(reinterpret_cast<const void*>(accessed), &q, sizeof(q)) || q.State != MEM_RESERVE ||
-        q.Type != MEM_MAPPED || !in_title_reservation(accessed) ||
-        g_scratch_views.count(reinterpret_cast<uintptr_t>(q.AllocationBase)))
+        q.Type != MEM_MAPPED)
+        return false;
+    const bool is_scratch = g_scratch_views.count(reinterpret_cast<uintptr_t>(q.AllocationBase)) != 0;
+    if (!in_title_reservation(accessed) && !is_scratch)
         return false;
     const uintptr_t at = accessed & ~uintptr_t(0xfff);
     if (!VirtualAlloc(reinterpret_cast<void*>(at), 0x1000, MEM_COMMIT, PAGE_READWRITE)) return false;
@@ -1661,6 +1663,11 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
                 where = kInWindow;
             else if (in_title_reservation(accessed))
                 where = kInPlaceholder;
+            else if (VirtualQuery(reinterpret_cast<const void*>(accessed), &seen, sizeof(seen)) &&
+                     g_scratch_views.count(reinterpret_cast<uintptr_t>(seen.AllocationBase))) {
+                where = kInPlaceholder;
+                queried = true;
+            }
             // Read under the lock, so it stays true until the lock is released: no page of a window or a placeholder of
             // the title's changes while it is held shared (each change of xmem's holds it exclusively, and a view of
             // xmem's at this page would have been found above). A committed mapped page with no view here is someone
@@ -1674,7 +1681,8 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
             if (from_title) {
                 if (!queried) queried = VirtualQuery(reinterpret_cast<const void*>(accessed), &seen, sizeof(seen)) != 0;
                 read_note_size = describe_read(read_note, pc, accessed, seen);
-                plant_read = where == kInWindow && g_pool_zero_pages;
+                plant_read = (where == kInWindow && g_pool_zero_pages) ||
+                             (where == kInPlaceholder && seen.State == MEM_RESERVE);
             }
             if (where != kNoReservation) fault_race_point(rt::xmem::kFaultDecided);
         }
@@ -1683,7 +1691,7 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
         DWORD written;
         WriteFile(GetStdHandle(STD_ERROR_HANDLE), read_note, read_note_size, &written, nullptr);
     }
-    const bool title_page = where != kNoReservation;
+    const bool title_page = where != kNoReservation || (from_title && seen.State == MEM_RESERVE);
     // A write into memory that is only reserved: never a routine fault (a guard is committed), so noted below.
     const bool reserved_write = queried && access == 1 && seen.State == MEM_RESERVE;
     bool answered = commit_answers(result, protect, access);
@@ -1718,9 +1726,9 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
             } else if (queried && seen.State == MEM_RESERVE) {
                 // A write into a window page the title never mapped: back it with a zeroed page (map_zero_page). No
                 // remap of this page is in flight while the lock is held.
-                if (!plant_read || g_mapped.find(address) == g_mapped.end())
+                if (where == kInWindow && (!plant_read || g_mapped.find(address) == g_mapped.end()))
                     planted = map_zero_page(address, plant_read);
-                committed = access == 1 && !planted && commit_title_section_page(accessed);
+                committed = !planted && commit_title_section_page(accessed);
                 answered = planted || committed;
             } else if (queried && committed_meanwhile(seen, access, accessed)) {
                 answered = true;
