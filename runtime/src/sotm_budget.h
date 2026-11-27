@@ -139,8 +139,8 @@ inline uint32_t choose_first_mip(uint32_t width, uint32_t height, uint32_t mip_l
     switch (tier) {
     case PressureTier::Normal:     target_max = max_normal_dim; break;
     case PressureTier::Elevated:   target_max = (std::min)(max_normal_dim, 512u); break;
-    case PressureTier::Critical:
-    case PressureTier::OverBudget: target_max = (std::min)(max_normal_dim, 256u); break;
+    case PressureTier::Critical:   target_max = (std::min)(max_normal_dim, 256u); break;
+    case PressureTier::OverBudget: target_max = (std::min)(max_normal_dim, 128u); break;
     }
     uint32_t first_mip = 0;
     uint32_t w = width, h = height;

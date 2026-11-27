@@ -105,6 +105,7 @@ int main() {
     assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Normal, 1024) == 2);
     assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Elevated, 1024) == 3);
     assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Critical, 1024) == 4);
+    assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::OverBudget, 1024) == 5);
     assert(leonida::sotm::choose_first_mip(4096, 4096, 1, leonida::sotm::PressureTier::OverBudget, 1024) == 0);
 
     // Phase 3 single-owner handoff, 64-bit tag isolation, and >= 3 fault ColdShared hysteresis

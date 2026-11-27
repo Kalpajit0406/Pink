@@ -16360,7 +16360,7 @@ private:
         }
         const auto& cfg = leonida::sotm::budget_config();
         const auto pressure = leonida::sotm::current_pressure(cfg);
-        if (cfg.evict && pressure >= leonida::sotm::PressureTier::Critical) {
+        if (cfg.evict && pressure >= leonida::sotm::PressureTier::Elevated) {
             evict_idle_title_textures(steady_now_ms());
         }
         std::uint32_t first_mip = 0;
@@ -16453,18 +16453,18 @@ private:
         const auto& cfg = leonida::sotm::budget_config();
         if (!cfg.evict) return;
         static std::uint64_t last_sweep_ms = 0;
-        if (now_ms < last_sweep_ms + 250) return;
+        if (now_ms < last_sweep_ms + 200) return;
         last_sweep_ms = now_ms;
         const auto pressure = leonida::sotm::current_pressure(cfg);
         if (pressure == leonida::sotm::PressureTier::Normal) return;
         std::uint64_t age_ms = 15000;
         std::uint64_t max_evict = 32ull << 20;
         if (pressure == leonida::sotm::PressureTier::Critical) {
-            age_ms = 5000;
-            max_evict = 64ull << 20;
+            age_ms = 3000;
+            max_evict = 96ull << 20;
         } else if (pressure == leonida::sotm::PressureTier::OverBudget) {
-            age_ms = 1500;
-            max_evict = 128ull << 20;
+            age_ms = 750;
+            max_evict = 256ull << 20;
         }
         struct Candidate {
             std::uint64_t last_used;
@@ -16502,29 +16502,45 @@ private:
     void maybe_handoff_title_texture(TitleTexture& t) {
         const auto& cfg = leonida::sotm::budget_config();
         if (!cfg.handoff) return;
-        if (!t.owned || t.mapped || t.gpu_written || !t.fills || t.unbound_bytes || t.handed_off || t.first_mip)
+        if (!t.owned || t.mapped || t.gpu_written || !t.fills || t.unbound_bytes || t.handed_off)
             return;
+        static std::atomic<std::uint64_t> c_span{0}, c_overlap{0}, c_noprov{0}, c_notpriv{0}, c_freefail{0}, c_ok{0},
+            c_last_ms{0};
+        const auto note = [&](std::atomic<std::uint64_t>& ctr) {
+            ctr.fetch_add(1, std::memory_order_relaxed);
+            const std::uint64_t now = steady_now_ms();
+            std::uint64_t prev = c_last_ms.load(std::memory_order_relaxed);
+            if (now >= prev + 30000 && c_last_ms.compare_exchange_strong(prev, now, std::memory_order_relaxed)) {
+                std::fprintf(stderr,
+                             "[sotm] handoff stats: ok=%llu span_lt64k=%llu overlap=%llu no_prov=%llu not_private=%llu free_fail=%llu\n",
+                             static_cast<unsigned long long>(c_ok.load()), static_cast<unsigned long long>(c_span.load()),
+                             static_cast<unsigned long long>(c_overlap.load()), static_cast<unsigned long long>(c_noprov.load()),
+                             static_cast<unsigned long long>(c_notpriv.load()), static_cast<unsigned long long>(c_freefail.load()));
+            }
+        };
         const std::uintptr_t begin = static_cast<std::uintptr_t>(t.cpu);
         const std::uintptr_t end = begin + static_cast<std::uintptr_t>(t.layout.layout.size);
         const std::uintptr_t aligned_begin =
             (begin + leonida::sotm::kPageSize - 1) & ~(leonida::sotm::kPageSize - 1);
         const std::uintptr_t aligned_end = end & ~(leonida::sotm::kPageSize - 1);
-        if (aligned_end <= aligned_begin) return;
+        if (aligned_end <= aligned_begin) { note(c_span); return; }
         bool shared_granule = false;
         state_.texture_ranges.overlapping(aligned_begin, aligned_end, [&](std::uint64_t key) {
             if (key != t.address) shared_granule = true;
         });
-        if (shared_granule) return;
-        if (!leonida::sotm::page_table().can_decommit(aligned_begin, aligned_end)) return;
+        if (shared_granule) { note(c_overlap); return; }
+        if (!leonida::sotm::page_table().can_decommit(aligned_begin, aligned_end)) { note(c_noprov); return; }
         for (std::uintptr_t at = aligned_begin; at < aligned_end;) {
             MEMORY_BASIC_INFORMATION mbi{};
             if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) ||
                 mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE ||
                 (mbi.Protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE | PAGE_GUARD)) ||
-                !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)))
+                !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) {
+                note(c_notpriv);
                 return;
+            }
             const std::uintptr_t seg_end = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-            if (seg_end <= at) return;
+            if (seg_end <= at) { note(c_notpriv); return; }
             at = seg_end;
         }
         leonida::sotm::page_table().mark_device_only(aligned_begin, aligned_end);
@@ -16532,8 +16548,10 @@ private:
         if (VirtualFree(reinterpret_cast<void*>(aligned_begin), decommit_bytes, MEM_DECOMMIT)) {
             t.handed_off = true;
             leonida::sotm::Accounting::instance().track_decommit(decommit_bytes);
+            note(c_ok);
         } else {
             leonida::sotm::page_table().mark_cpu_write(aligned_begin, decommit_bytes);
+            note(c_freefail);
         }
     }
 
