@@ -16470,8 +16470,8 @@ private:
             age_ms = 3000;
             max_evict = 128ull << 20;
         } else if (pressure == leonida::sotm::PressureTier::OverBudget) {
-            age_ms = 1000;
-            max_evict = 256ull << 20;
+            age_ms = 500;
+            max_evict = 384ull << 20;
         }
         struct Candidate {
             std::uint64_t last_used;
