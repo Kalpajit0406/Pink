@@ -21,6 +21,7 @@
 #include "base_reservation.h"
 #include "clzero_patch.h"
 #include "cpu_emulation.h"
+#include "patch_table_loader.h"
 
 namespace rt {
 
@@ -2310,6 +2311,9 @@ void Loader::protect_sections(Module& m) {
                          "[rt] loader: %s: %zu CLZERO loops run from stubs at %p (%zu bytes), not as a #UD per line\n",
                          m.name.c_str(), patched.sites, static_cast<void*>(patched.stubs), patched.stub_bytes);
     }
+    // Milestone O7: Apply byte-checked in-memory patch table if patches.tbl is present
+    const auto patches_path = std::filesystem::path("patches.tbl");
+    leonida::offline::apply_patch_table(patches_path, m.base, m.size, nullptr);
     VirtualProtect(m.base, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &old);
     auto* sec = IMAGE_FIRST_SECTION(nt);
     for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
