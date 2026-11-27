@@ -21,9 +21,9 @@ The diff between the two `main` branches is exactly that: one file, two deletion
 ## Current measured progress (this PC)
 
 - The title screen is reachable: the game presents an identical “Americas” collage (md5 `8929bf1dfd2e`) in a 180 s window with native PSO failures at 0 and compute-shader misses at 0 in the reached run.
-- With input enabled (scripted pad via `LEONIDA_INPUT_SCRIPT` on this build, which serves no SDL3 devices), the title leaves that landing prompt and the capture sequence changes past the collage: navigation experience → brightness → legal notices → a dark loading screen.
-- The next concrete blocker on our side is **asset streaming**: during that loading stage the DirectStorage path reports `E_DSTORAGE_DECOMPRESSION_ERROR` (0x89240030) with reason `missing-profile` on several TTD-hosted texture dictionaries (`data/ttdb/…`). That is the lead for getting past the loading screen.
-- Title-bar HUD is now on by default and the counters read in MB; a window-screenshot crop of the title bar exists and shows the caption plus FPS/RAM/VRAM MB and the pipeline counter (`PSO -`, because `LEONIDA_MEM_PROBE` was not enabled in that grab).
+- With input enabled (scripted pad via `LEONIDA_INPUT_SCRIPT` on this build, which serves no SDL3 devices), the title leaves that landing prompt and the capture sequence changes past the collage: navigation experience, brightness, legal notices, then a dark loading screen.
+- The next concrete blocker on our side is **asset streaming**: during that loading stage the DirectStorage path reports `E_DSTORAGE_DECOMPRESSION_ERROR` (0x89240030) with reason `missing-profile` on several TTD-hosted texture dictionaries (`data/ttdb/...`). That is the lead for getting past the loading screen.
+- Title-bar HUD is now on by default and the counters read in MB; a window-screenshot crop of the title bar exists and shows the caption plus FPS/RAM/VRAM MB and the pipeline counter (`PSO -` because `LEONIDA_MEM_PROBE` was not enabled in that grab).
 
 ## Next concrete actions
 
@@ -34,4 +34,4 @@ The diff between the two `main` branches is exactly that: one file, two deletion
 
 ## Push target
 
-Pushes from this checkout go to `origin` (the first-party repo), not the `pink` fork. The `STATUS.md` changes here are committed to `main` and pushed to `origin`, which is the repo's default branch.
+Pushes from this checkout go to `origin` (the first-party repo), not the `pink` fork. The `STATUS.md` changes here are committed to `main` and targeted for push to `origin`, which is the repo's default branch. Note: a push from this checkout currently cannot reach `origin` because it resolves as "Repository not found" here; only the fork remote `pink` and the local `ubiq` remote resolve from this checkout.
