@@ -32,7 +32,7 @@ inline bool async_replay_compile() {
         wchar_t v[4]{};
         const DWORD n = GetEnvironmentVariableW(L"LEONIDA_ASYNC_PIPELINES", v, 4);
         if (n > 0) return v[0] == L'1' || !_wcsicmp(v, L"yes") || !_wcsicmp(v, L"on");
-        return true; // Enabled by default to eliminate stutter
+        return false;
     }();
     return on && !leonida::strict_replay();
 }
@@ -248,9 +248,13 @@ public:
             ++stats_.refused;
             return false;
         }
-        if (!worker_.joinable()) {
+        if (general_workers_.empty()) {
             const std::uint64_t generation = generation_;
-            worker_ = std::thread([this, generation] { run(generation, false); });
+            const unsigned count = compute_worker_count();
+            general_workers_.reserve(count);
+            for (unsigned k = 0; k < count; ++k) {
+                general_workers_.emplace_back([this, generation] { run(generation, false); });
+            }
         }
         if (graphics && graphics_worker_enabled() && graphics_workers_.empty()) {
             const std::uint64_t generation = generation_;
@@ -372,7 +376,7 @@ public:
     }
     bool worker_running() {
         std::lock_guard lock(mutex_);
-        return worker_.joinable() || !graphics_workers_.empty();
+        return !general_workers_.empty() || !graphics_workers_.empty();
     }
     // Tests: called on the worker with each job's owner, once the job counts as running and before its work.
     void set_job_probe(std::function<void(const void* owner)> probe) {
@@ -394,6 +398,16 @@ private:
         }();
         return on;
     }
+    static unsigned compute_worker_count() {
+        static const unsigned count = []() -> unsigned {
+            char text[16]{};
+            const DWORD n = GetEnvironmentVariableA("LEONIDA_COMPUTE_COMPILE_WORKERS", text, sizeof(text));
+            const unsigned long v = (n > 0 && n < sizeof(text)) ? std::strtoul(text, nullptr, 10) : 0;
+            if (v > 0) return static_cast<unsigned>((std::min)(v, 8ul));
+            return 1u;
+        }();
+        return count;
+    }
     static unsigned graphics_worker_count() {
         static const unsigned count = []() -> unsigned {
             char text[16]{};
@@ -405,9 +419,9 @@ private:
         }();
         return count;
     }
-    // Both workers: the general one, and the graphics ones when they were started.
+    // Both workers: the general ones, and the graphics ones when they were started.
     struct Workers {
-        std::thread general;
+        std::vector<std::thread> general;
         std::vector<std::thread> graphics;
     };
     struct Running {
@@ -434,7 +448,7 @@ private:
         drop_locked(dropped, [](const Job&) { return true; });
         ++generation_;  // the workers return when they next look: after the job each is running, if any
         wake_.notify_all();
-        return {std::move(worker_), std::move(graphics_workers_)};
+        return {std::move(general_workers_), std::move(graphics_workers_)};
     }
 
     static void finish(std::thread worker, bool join) {
@@ -443,7 +457,7 @@ private:
         else worker.detach();
     }
     static void finish(Workers workers, bool join) {
-        finish(std::move(workers.general), join);
+        for (auto& w : workers.general) finish(std::move(w), join);
         for (auto& w : workers.graphics) finish(std::move(w), join);
     }
 
@@ -504,7 +518,7 @@ private:
     std::condition_variable done_;
     std::multimap<std::size_t, Job> jobs_;
     std::vector<Running> running_;  // one per worker; a stopped worker may still be finishing one
-    std::thread worker_;
+    std::vector<std::thread> general_workers_;
     std::vector<std::thread> graphics_workers_;  // graphics jobs only (submit's `graphics`), started at the first one
     std::uint64_t generation_ = 0;  // a worker runs while this is the value it started with
     unsigned users_ = 0;            // live devices (retain/release)
