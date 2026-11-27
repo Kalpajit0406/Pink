@@ -40,9 +40,7 @@ happens **on your PC, from your own copy of the game**.
 > author has left the project, and development continues here with its full commit history. Credit for the work up to
 > that point belongs to NotRexed and the contributors listed in the history.
 
-Discord: https://discord.gg/ETf4qj5acN
 
-Telegram: https://t.me/mandyport
 
 Original author's Git Mirror: https://git.notrexed.dev/notrexed/Leonida
 <br>
