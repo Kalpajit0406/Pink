@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
 
 namespace leonida::bcpack {
@@ -407,8 +408,13 @@ Quality decode(unsigned codec, std::span<const uint8_t> source,
   array<Endpoints, 256> classic{};
   array<BptcState, 256> bptc{};
   Coverage coverage{};
+  static const bool relax_fitted = [] {
+    const char* v = std::getenv("LEONIDA_DSTORAGE_RELAX_BCPACK");
+    return !v || (v[0] != '0');
+  }();
   coverage.limit = allow_fitted && history
-                       ? max<size_t>(2, output.size() / block_size / 1024)
+                       ? (relax_fitted ? max<size_t>(1024, output.size() / block_size / 2)
+                                       : max<size_t>(2, output.size() / block_size / 1024))
                        : 0;
   const bool valid = visit_blocks(codec, source, output.size(), [&](size_t i, const Symbols &first, const Symbols &tuple) {
     auto *dst = output.data() + i * block_size;
