@@ -264,4 +264,102 @@ inline void set_gauge(Category cat, uint64_t bytes) { Accounting::instance().set
 inline uint64_t get_bytes(Category cat) { return Accounting::instance().get_bytes(cat); }
 inline void dump_mem_map(FILE* out = stderr) { Accounting::instance().dump_mem_map(out); }
 
+// SOTM Component C11: Memory Governor & Preset Auto-Selector
+enum class Preset : uint8_t {
+    Auto,
+    A, // 16GB RAM / 4-6GB VRAM, Series S, 2.5GB texture pool, 64MB staging
+    B, // 24GB RAM / 6GB VRAM, Series S profile, 3.5GB texture pool, 64-128MB staging
+    C  // 32GB RAM / 8-12GB VRAM, Series X, 5GB+ texture pool, 128-192MB staging
+};
+
+struct GovernorPreset {
+    Preset preset;
+    const char* name;
+    const char* console_profile;
+    uint32_t texture_pool_mb;
+    uint32_t staging_mb;
+    uint32_t ring_mb;
+};
+
+inline GovernorPreset detect_and_apply_governor() {
+    uint64_t total_ram_mb = 16384;
+#ifdef _WIN32
+    MEMORYSTATUSEX mem_status{sizeof(MEMORYSTATUSEX)};
+    if (GlobalMemoryStatusEx(&mem_status)) {
+        total_ram_mb = mem_status.ullTotalPhys >> 20;
+    }
+#endif
+
+    Preset chosen = Preset::B; // Default target: Owner's RTX 3050 6GB / 24GB RAM PC
+    char env_preset[16]{};
+#ifdef _WIN32
+    DWORD len = GetEnvironmentVariableA("LEONIDA_MEM_PRESET", env_preset, sizeof(env_preset));
+    if (len > 0) {
+        if (_stricmp(env_preset, "A") == 0) chosen = Preset::A;
+        else if (_stricmp(env_preset, "B") == 0) chosen = Preset::B;
+        else if (_stricmp(env_preset, "C") == 0) chosen = Preset::C;
+    } else {
+        if (total_ram_mb <= 17000) chosen = Preset::A;
+        else if (total_ram_mb <= 26000) chosen = Preset::B;
+        else chosen = Preset::C;
+    }
+#endif
+
+    GovernorPreset p{};
+    p.preset = chosen;
+    switch (chosen) {
+    case Preset::A:
+        p.name = "A (16GB RAM / 4-6GB VRAM)";
+        p.console_profile = "series-s";
+        p.texture_pool_mb = 2560;
+        p.staging_mb = 64;
+        p.ring_mb = 128;
+        break;
+    case Preset::B:
+        p.name = "B (24GB RAM / 6GB VRAM - Primary Target)";
+        p.console_profile = "series-s";
+        p.texture_pool_mb = 3584;
+        p.staging_mb = 64;
+        p.ring_mb = 128;
+        break;
+    case Preset::C:
+        p.name = "C (32GB+ RAM / 8-12GB VRAM)";
+        p.console_profile = "series-x";
+        p.texture_pool_mb = 5120;
+        p.staging_mb = 128;
+        p.ring_mb = 256;
+        break;
+    default:
+        p.name = "B";
+        p.console_profile = "series-s";
+        p.texture_pool_mb = 3584;
+        p.staging_mb = 64;
+        p.ring_mb = 128;
+        break;
+    }
+
+#ifdef _WIN32
+    // If not explicitly overridden by user, apply governor defaults
+    char existing[32]{};
+    if (GetEnvironmentVariableA("LEONIDA_CONSOLE_PROFILE", existing, sizeof(existing)) == 0) {
+        SetEnvironmentVariableA("LEONIDA_CONSOLE_PROFILE", p.console_profile);
+    }
+    if (GetEnvironmentVariableA("LEONIDA_MEM_STAGE_MB", existing, sizeof(existing)) == 0) {
+        char val[16];
+        snprintf(val, sizeof(val), "%u", p.staging_mb);
+        SetEnvironmentVariableA("LEONIDA_MEM_STAGE_MB", val);
+    }
+    if (GetEnvironmentVariableA("LEONIDA_MEM_RING_MB", existing, sizeof(existing)) == 0) {
+        char val[16];
+        snprintf(val, sizeof(val), "%u", p.ring_mb);
+        SetEnvironmentVariableA("LEONIDA_MEM_RING_MB", val);
+    }
+#endif
+
+    std::fprintf(stderr,
+                 "[sotm] Memory Governor: active Preset %s (System RAM: %llu MB, Profile: %s, Staging: %u MB, Ring: %u MB)\n",
+                 p.name, static_cast<unsigned long long>(total_ram_mb), p.console_profile, p.staging_mb, p.ring_mb);
+    return p;
+}
+
 }  // namespace leonida::sotm

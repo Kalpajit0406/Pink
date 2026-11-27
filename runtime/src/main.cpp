@@ -710,6 +710,9 @@ int wmain(int argc, wchar_t** argv) {
     });
     AddVectoredExceptionHandler(1, &on_crash_veh);
 
+    // SOTM Component C11: Memory Governor & Preset Auto-Detection
+    leonida::sotm::detect_and_apply_governor();
+
     // SOTM Component C1 / C12: Memory Telemetry & Accounting
     {
         char report_sec[16]{};
