@@ -284,6 +284,8 @@ $defaults = [ordered]@{
     LEONIDA_MEM_ALIAS_PLACED          = "1"
     LEONIDA_MEM_MIP_CAP               = "1"
     LEONIDA_MEM_MIP_MAX_DIM           = "1024"
+    LEONIDA_MEM_EVICT                 = "1"
+    LEONIDA_MEM_TEXTURE_STAGE_MS      = "6"
     LEONIDA_CONSOLE_PROFILE           = "series-s"
 }
 $histCandidate = "E:\Leonida\work\bcpack\history.bcph"

@@ -15637,7 +15637,11 @@ public:
         static const std::uint64_t check_budget = setting("LEONIDA_TITLE_TEXTURE_CHECK_KB", 4096) << 10;
         static const std::uint64_t fill_budget = setting("LEONIDA_TITLE_TEXTURE_FILL_MB", 32) << 20;
         // And at most this long filling a pass (0: no limit); a texture already started is finished.
-        static const std::uint64_t fill_budget_ns = setting("LEONIDA_TITLE_TEXTURE_FILL_MS", 8) * 1000000;
+        static const std::uint64_t fill_budget_ns =
+            (std::getenv("LEONIDA_TITLE_TEXTURE_FILL_MS")
+                 ? setting("LEONIDA_TITLE_TEXTURE_FILL_MS", 8)
+                 : leonida::sotm::budget_config().texture_stage_ms) *
+            1000000ULL;
         // Stop the background sweep at a texture boundary. Zero keeps the byte budget alone.
         static const std::uint64_t hash_budget_us = setting("LEONIDA_TEXTURE_HASH_BUDGET_US", 400);
         // Residency checks and uploads also cost time. Limit background work between textures;
@@ -15875,6 +15879,9 @@ public:
             release.push_back(r.second);
             return true;
         });
+        evict_idle_title_textures(steady_now_ms());
+        if (title_tiled_.capacity() > (16u << 20)) std::vector<std::uint8_t>().swap(title_tiled_);
+        if (title_linear_.capacity() > (16u << 20)) std::vector<std::uint8_t>().swap(title_linear_);
         title_pass_ = false;
         const std::uint64_t pass_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - now).count();
         stats.refresh_ns += pass_ns;
@@ -16034,6 +16041,7 @@ private:
             Resource* r = nullptr;
             rt::xg_xs::Texture layout{};
             std::uint64_t cpu = 0, fills = 0;
+            std::uint32_t first_mip = 0;
             bool every_byte = false;
             {
                 std::lock_guard lock(state_.title_texture_mutex);
@@ -16050,6 +16058,7 @@ private:
                             layout = t.layout;
                             cpu = t.cpu;
                             fills = t.fills;
+                            first_mip = t.first_mip;
                             every_byte = t.every_byte();
                         } else {
                             filled = fill_title_texture(t, true) != 0;
@@ -16059,7 +16068,7 @@ private:
                 }
             }
             if (r) {
-                filled = fill_unlocked(address, *r, layout, cpu, fills, every_byte, f);
+                filled = fill_unlocked(address, *r, layout, cpu, fills, first_mip, every_byte, f);
                 r->Release();
             }
             std::size_t left = 0;
@@ -16083,7 +16092,7 @@ private:
     // The fill worker's fill of a staged texture: copy, hash and upload without the registry lock, then the result
     // under it, if the registry still names `r` at `address` and nobody filled it meanwhile.
     bool fill_unlocked(std::uint64_t address, Resource& r, const rt::xg_xs::Texture& layout, std::uint64_t cpu,
-                       std::uint64_t fills, bool every_byte, TitleFiller& f) {
+                       std::uint64_t fills, std::uint32_t first_mip, bool every_byte, TitleFiller& f) {
         const std::uint64_t span = layout.layout.size;
         f.tiled.resize(std::size_t(span));
         const bool copied = copy_guarded(f.tiled.data(), reinterpret_cast<const std::uint8_t*>(cpu), std::size_t(span),
@@ -16095,10 +16104,11 @@ private:
             hash_guarded(f.tiled.data(), f.tiled.size(), hash);
             full_hashed = every_byte && hash_guarded(f.tiled.data(), f.tiled.size(), full, true);
             const auto start = std::chrono::steady_clock::now();
-            ok = r.upload_staged_title(layout, f.tiled.data(), f.columns, false, nonzero);
+            ok = r.upload_staged_title(layout, f.tiled.data(), f.columns, false, nonzero, first_mip);
             staged_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
                             .count();
         }
+        if (f.tiled.capacity() > (16u << 20)) std::vector<std::uint8_t>().swap(f.tiled);
         std::lock_guard lock(state_.title_texture_mutex);
         const InTitleTextures inside;
         const auto it = state_.title_textures.find(address);
@@ -16119,6 +16129,7 @@ private:
         ++title_stats_.staged_fills;
         if (t.fills != fills) return true;  // another fill recorded itself in between: its hash is as good
         if (t.owned && !t.fills) r.publish_streamed_texture();
+        t.last_used_ms = steady_now_ms();
         t.hash = hash;
         t.hashed = true;
         t.full_hash = full;
@@ -16345,11 +16356,15 @@ private:
             add(srv.Format);
         }
         const auto& cfg = leonida::sotm::budget_config();
+        const auto pressure = leonida::sotm::current_pressure(cfg);
+        if (cfg.evict && pressure >= leonida::sotm::PressureTier::Critical) {
+            evict_idle_title_textures(steady_now_ms());
+        }
         std::uint32_t first_mip = 0;
         if (cfg.mip_cap && d.dimension == xg::kTexture2D && entry->layout.layout.mips > 1) {
             first_mip = leonida::sotm::choose_first_mip(
                 static_cast<std::uint32_t>(d.width), d.height, entry->layout.layout.mips,
-                leonida::sotm::current_pressure(cfg), cfg.mip_max_normal);
+                pressure, cfg.mip_max_normal);
         }
         entry->first_mip = first_mip;
         D3D12_RESOURCE_DESC pc{};
@@ -16404,6 +16419,7 @@ private:
         entry->layout_known = true;
         entry->set_resource(r);
         entry->owned = true;
+        entry->last_used_ms = steady_now_ms();
         entry->formats = std::move(formats);
         if (title_fill_async()) {
             entry->stale = true;  // filled by the fill worker (queued below, once it is in the registry)
@@ -16427,6 +16443,55 @@ private:
         retired_title_textures_.emplace_back(std::chrono::steady_clock::now(), t.resource);
         t.resource = nullptr;
         ++title_stats_.retired;
+    }
+
+    // LRU idle streamed texture eviction under title_texture_mutex (Phase 2).
+    void evict_idle_title_textures(std::uint64_t now_ms) {
+        const auto& cfg = leonida::sotm::budget_config();
+        if (!cfg.evict) return;
+        static std::uint64_t last_sweep_ms = 0;
+        if (now_ms < last_sweep_ms + 250) return;
+        last_sweep_ms = now_ms;
+        const auto pressure = leonida::sotm::current_pressure(cfg);
+        if (pressure == leonida::sotm::PressureTier::Normal) return;
+        std::uint64_t age_ms = 15000;
+        std::uint64_t max_evict = 32ull << 20;
+        if (pressure == leonida::sotm::PressureTier::Critical) {
+            age_ms = 5000;
+            max_evict = 64ull << 20;
+        } else if (pressure == leonida::sotm::PressureTier::OverBudget) {
+            age_ms = 1500;
+            max_evict = 128ull << 20;
+        }
+        struct Candidate {
+            std::uint64_t last_used;
+            std::uint64_t address;
+            std::uint64_t bytes;
+        };
+        std::vector<Candidate> candidates;
+        for (const auto& [addr, ptr] : state_.title_textures) {
+            const TitleTexture& t = *ptr;
+            if (!t.owned || !t.resource || t.mapped || t.gpu_written || !t.fills || t.unbound_bytes ||
+                !t.backing_bytes)
+                continue;
+            if (now_ms >= t.last_used_ms + age_ms) {
+                candidates.push_back({t.last_used_ms, addr, t.backing_bytes});
+            }
+        }
+        if (candidates.empty()) return;
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const Candidate& a, const Candidate& b) { return a.last_used < b.last_used; });
+        std::uint64_t evicted = 0;
+        for (const Candidate& c : candidates) {
+            if (evicted >= max_evict) break;
+            const auto it = state_.title_textures.find(c.address);
+            if (it == state_.title_textures.end() || !it->second->owned || !it->second->resource) continue;
+            retire_title_texture(*it->second);
+            state_.texture_ranges.erase(c.address);
+            state_.title_textures.erase(it);
+            evicted += c.bytes;
+            leonida::sotm::Accounting::instance().track_evict(c.bytes);
+        }
     }
 
     static bool texture_probe() {
@@ -16598,6 +16663,7 @@ private:
                          static_cast<unsigned long long>(t.cpu), static_cast<unsigned long long>(span),
                          int(staged), int(nonzero));
         if (t.owned && !t.fills) t.resource->publish_streamed_texture();
+        t.last_used_ms = steady_now_ms();
         t.hash = hash;
         t.hashed = true;
         t.stale = false;
