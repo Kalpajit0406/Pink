@@ -22,6 +22,7 @@
 #endif
 
 #include "memory_figures.h"
+#include "memory_profile_loader.h"
 
 namespace leonida::sotm {
 
@@ -245,6 +246,7 @@ public:
 private:
     Accounting() {
         for (auto& cat : categories_) cat.store(0, std::memory_order_relaxed);
+        leonida::offline::MemoryProfileLoader::instance().open("memory_profile.bin");
     }
     ~Accounting() {
         stop_reporter();
