@@ -541,7 +541,10 @@ int precompile_main(int argc, wchar_t** argv) {
         else if (a == L"--list") options.dry_run = true;
         else if (a == L"--check") options.check_only = true;
         else if (a == L"--via-helper") options.via_helper = true;
-        else if (a == L"--filter" && i + 1 < argc) {
+        else if (a == L"--manifest" && i + 1 < argc) {
+            const std::wstring part = argv[++i];
+            SetEnvironmentVariableW(L"LEONIDA_MANIFEST_PATH", part.c_str());
+        } else if (a == L"--filter" && i + 1 < argc) {
             const std::wstring part = argv[++i];
             options.filters.emplace_back(part.begin(), part.end());  // library names are ASCII
         } else ok = false;
@@ -681,7 +684,8 @@ static BOOL WINAPI show_package_window(HWND window, int command) {
 
 int wmain(int argc, wchar_t** argv) {
 #ifdef LEONIDA_VULKAN_DEVICE
-    if (argc > 1 && (std::wstring(argv[1]) == L"--precompile-pipelines" || std::wstring(argv[1]) == L"precompile")) return precompile_main(argc, argv);
+    if (argc > 1 && (std::wstring(argv[1]) == L"--precompile-pipelines" || std::wstring(argv[1]) == L"precompile" ||
+                     std::wstring(argv[1]) == L"--warm" || std::wstring(argv[1]) == L"warm")) return precompile_main(argc, argv);
     if (argc > 1 && std::wstring(argv[1]) == L"--compile-server") return compile_server_main(argc, argv);
 #endif
     // Priority and scheduling: default to HIGH to prevent starving input, Bluetooth XInput, and DWM

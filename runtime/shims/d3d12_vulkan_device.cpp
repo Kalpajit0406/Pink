@@ -48,6 +48,7 @@
 #include "../src/resource_tiling.h"
 #include "../src/cached_pso.h"
 #include "../src/shader_pack.h"
+#include "../src/pipeline_manifest_record.h"
 #include "../src/pipeline_cache_file.h"
 #include "../src/pipeline_profile.h"
 #include "../src/submit_phases.h"
@@ -17411,11 +17412,19 @@ public:
         leonida::cached_pso::Key key = pipeline_key(*desc);
         if (const HRESULT hr = check_cached_pso(state_.pso_identity, key, desc->CachedPSO); FAILED(hr)) return hr;
         auto* pipeline = new PipelineState(state_);
+        const std::string key_str = key;
         pipeline->attach_device(identity());
         pipeline->set_cache_key(std::move(key));
         if (const HRESULT hr = pipeline->create_compute(*desc); FAILED(hr)) {
             pipeline->Release();
             return hr;
+        }
+        if (leonida::offline::PipelineManifestRecorder::instance().is_enabled()) {
+            std::string cs_hash;
+            if (desc->CS.pShaderBytecode && desc->CS.BytecodeLength) {
+                cs_hash = leonida::sha256_hex({static_cast<const uint8_t*>(desc->CS.pShaderBytecode), desc->CS.BytecodeLength});
+            }
+            leonida::offline::PipelineManifestRecorder::instance().record_compute(key_str, cs_hash, 0);
         }
         return hand_out(pipeline, riid, out);
     }
@@ -17428,11 +17437,45 @@ public:
         leonida::cached_pso::Key key = pipeline_key(*desc);
         if (const HRESULT hr = check_cached_pso(state_.pso_identity, key, desc->CachedPSO); FAILED(hr)) return hr;
         auto* pipeline = new PipelineState(state_);
+        const std::string key_str = key;
         pipeline->attach_device(identity());
         pipeline->set_cache_key(std::move(key));
         if (const HRESULT hr = pipeline->create_graphics(*desc); FAILED(hr)) {
             pipeline->Release();
             return hr;
+        }
+        if (leonida::offline::PipelineManifestRecorder::instance().is_enabled()) {
+            std::vector<std::string> stage_hashes;
+            if (desc->VS.pShaderBytecode && desc->VS.BytecodeLength)
+                stage_hashes.push_back(leonida::sha256_hex({static_cast<const uint8_t*>(desc->VS.pShaderBytecode), desc->VS.BytecodeLength}));
+            if (desc->PS.pShaderBytecode && desc->PS.BytecodeLength)
+                stage_hashes.push_back(leonida::sha256_hex({static_cast<const uint8_t*>(desc->PS.pShaderBytecode), desc->PS.BytecodeLength}));
+            if (desc->GS.pShaderBytecode && desc->GS.BytecodeLength)
+                stage_hashes.push_back(leonida::sha256_hex({static_cast<const uint8_t*>(desc->GS.pShaderBytecode), desc->GS.BytecodeLength}));
+
+            std::vector<uint32_t> rtvs;
+            for (UINT i = 0; i < desc->NumRenderTargets; ++i) {
+                rtvs.push_back(static_cast<uint32_t>(desc->RTVFormats[i]));
+            }
+            uint32_t blend_mask = 0;
+            for (UINT i = 0; i < desc->NumRenderTargets; ++i) {
+                if (desc->BlendState.RenderTarget[desc->BlendState.IndependentBlendEnable ? i : 0].BlendEnable)
+                    blend_mask |= (1u << i);
+            }
+            leonida::offline::PipelineManifestRecorder::instance().record_graphics(
+                key_str,
+                stage_hashes,
+                rtvs,
+                static_cast<uint32_t>(desc->DSVFormat),
+                desc->SampleDesc.Count,
+                static_cast<uint32_t>(desc->PrimitiveTopologyType),
+                blend_mask,
+                desc->DepthStencilState.DepthEnable != 0,
+                desc->DepthStencilState.DepthWriteMask == D3D12_DEPTH_WRITE_MASK_ALL,
+                static_cast<uint32_t>(desc->DepthStencilState.DepthFunc),
+                static_cast<uint32_t>(desc->RasterizerState.CullMode),
+                0
+            );
         }
         return hand_out(pipeline, riid, out);
     }
