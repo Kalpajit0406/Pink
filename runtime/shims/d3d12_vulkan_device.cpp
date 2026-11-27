@@ -9619,11 +9619,26 @@ public:
         std::uint8_t texels[4096];
         const HRESULT hr = cpu_copy(false, 0, nullptr, texels, UINT(row), UINT(row));
         static std::atomic<std::uint64_t> done{0}, failed{0};
-        if (FAILED(hr) || !copy_guarded(static_cast<std::uint8_t*>(title_address_), texels, std::size_t(row), false)) {
+        void* dest = title_address_;
+        std::uintptr_t translated = 0;
+        if (rt::placed_image_map_note::title_pointer(reinterpret_cast<std::uintptr_t>(title_address_), translated)) {
+            dest = reinterpret_cast<void*>(translated);
+        }
+        static const float floor_val = [] {
+            const char* v = std::getenv("LEONIDA_MAP_READBACK_FLOOR");
+            return v ? std::strtof(v, nullptr) : 0.0f;
+        }();
+        if (floor_val > 0.0f && desc_.Format == DXGI_FORMAT_R32G32B32A32_FLOAT && row >= sizeof(float) * 3) {
+            float* f = reinterpret_cast<float*>(texels);
+            if (f[0] < floor_val) f[0] = floor_val;
+            if (f[1] < floor_val) f[1] = floor_val;
+            if (f[2] < floor_val) f[2] = floor_val;
+        }
+        if (FAILED(hr) || !copy_guarded(static_cast<std::uint8_t*>(dest), texels, std::size_t(row), false)) {
             const std::uint64_t n = failed.fetch_add(1, std::memory_order_relaxed) + 1;
             if (n <= 4 || !(n & (n - 1)))
                 std::fprintf(stderr, "[rt] d3d12: map read-back of a %llux1 target at %p failed (hr 0x%08lx; %llu so far)\n",
-                             static_cast<unsigned long long>(desc_.Width), title_address_, static_cast<unsigned long>(hr),
+                             static_cast<unsigned long long>(desc_.Width), dest, static_cast<unsigned long>(hr),
                              static_cast<unsigned long long>(n));
             return;
         }
@@ -9634,7 +9649,7 @@ public:
             std::fprintf(stderr, "[rt] d3d12: map read-back #%llu: %llux1 format %d target at %p, first texel %g %g %g "
                                  "%g\n",
                          static_cast<unsigned long long>(n), static_cast<unsigned long long>(desc_.Width),
-                         int(desc_.Format), title_address_, f[0], f[1], f[2], f[3]);
+                         int(desc_.Format), dest, f[0], f[1], f[2], f[3]);
         }
     }
 
