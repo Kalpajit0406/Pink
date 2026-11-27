@@ -4839,7 +4839,10 @@ struct DeviceState {
         if (vk.vkCreateBuffer(info.device, &create, nullptr, &heap.buffer) != VK_SUCCESS) return false;
         const auto fail = [&] {
             if (heap.buffer) vk.vkDestroyBuffer(info.device, heap.buffer, nullptr);
-            if (heap.memory) vk.vkFreeMemory(info.device, heap.memory, nullptr);
+            if (heap.memory) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(heap.memory));
+                vk.vkFreeMemory(info.device, heap.memory, nullptr);
+            }
             leonida::kernel_writes::release(std::exchange(heap.pin, 0));
             heap.buffer = VK_NULL_HANDLE;
             heap.memory = VK_NULL_HANDLE;
@@ -4869,6 +4872,9 @@ struct DeviceState {
                 allocate.memoryTypeIndex = i;
                 if (vk.vkAllocateMemory(info.device, &allocate, nullptr, &heap.memory) != VK_SUCCESS)
                     heap.memory = VK_NULL_HANDLE;
+                else
+                    leonida::sotm::track_vk_alloc(reinterpret_cast<std::uint64_t>(heap.memory),
+                                                  leonida::sotm::Category::DescriptorMirrors, span);
             }
             if (heap.memory) break;
         }
@@ -5064,13 +5070,17 @@ struct DeviceState {
             while (heap_gpu->uncommitted()) Sleep(0);
             context->wait_retire_ticket(context->submitted_retire_ticket());
             if (heap->input_buffer) context->vk.vkDestroyBuffer(info.device, heap->input_buffer, nullptr);
-            if (heap->input_memory) context->vk.vkFreeMemory(info.device, heap->input_memory, nullptr);
+            if (heap->input_memory) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(heap->input_memory));
+                context->vk.vkFreeMemory(info.device, heap->input_memory, nullptr);
+            }
         }
         if (heap->buffer) {
             // As for an imported slot-133 buffer: the title may free its pages right after, so the memory goes once
             // what was submitted retires, not through the deferred queue.
             context->wait_retire_ticket(context->submitted_retire_ticket());
             context->vk.vkDestroyBuffer(info.device, heap->buffer, nullptr);
+            leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(heap->memory));
             context->vk.vkFreeMemory(info.device, heap->memory, nullptr);
             leonida::kernel_writes::release(std::exchange(heap->pin, 0));
         } else {
@@ -5470,7 +5480,10 @@ struct DeviceState {
         if (vk.vkCreateBuffer(info.device, &create, nullptr, &buffer) != VK_SUCCESS) return false;
         const auto fail = [&] {
             if (buffer) vk.vkDestroyBuffer(info.device, buffer, nullptr);
-            if (out) vk.vkFreeMemory(info.device, out, nullptr);
+            if (out) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(out));
+                vk.vkFreeMemory(info.device, out, nullptr);
+            }
             buffer = VK_NULL_HANDLE;
             out = VK_NULL_HANDLE;
             return false;
@@ -5497,7 +5510,8 @@ struct DeviceState {
                 allocate.allocationSize = bytes;
                 allocate.memoryTypeIndex = i;
                 if (vk.vkAllocateMemory(info.device, &allocate, nullptr, &out) != VK_SUCCESS) out = VK_NULL_HANDLE;
-                else leonida::sotm::track_alloc(leonida::sotm::Category::Staging, bytes);
+                else leonida::sotm::track_vk_alloc(reinterpret_cast<std::uint64_t>(out),
+                                                   leonida::sotm::Category::DescriptorMirrors, bytes);
             }
             if (out) break;
         }
@@ -5523,8 +5537,8 @@ struct DeviceState {
                                              std::uint32_t(heap.bytes / kDescriptorSize));
         if (index < 0) {
             context->vk.vkDestroyBuffer(info.device, heap.input_buffer, nullptr);
+            leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(heap.input_memory));
             context->vk.vkFreeMemory(info.device, heap.input_memory, nullptr);
-            leonida::sotm::track_free(leonida::sotm::Category::Staging, heap.bytes);
             heap.input_buffer = VK_NULL_HANDLE;
             heap.input_memory = VK_NULL_HANDLE;
             return;
@@ -5876,7 +5890,8 @@ struct DeviceState {
         VkMemoryRequirements requirements{};
         vk.vkGetBufferMemoryRequirements(info.device, guard.buffer, &requirements);
         guard.memory = allocate(requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, true);
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, true, nullptr, VK_NULL_HANDLE,
+                                leonida::sotm::Category::HashBuffers);
         void* mapped = nullptr;
         if (!guard.memory || vk.vkBindBufferMemory(info.device, guard.buffer, guard.memory, 0) != VK_SUCCESS ||
             vk.vkMapMemory(info.device, guard.memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
@@ -5905,7 +5920,10 @@ struct DeviceState {
         if (!context) return;
         auto& vk = context->vk;
         if (guard.buffer) vk.vkDestroyBuffer(info.device, guard.buffer, nullptr);
-        if (guard.memory) vk.vkFreeMemory(info.device, guard.memory, nullptr);
+        if (guard.memory) {
+            leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(guard.memory));
+            vk.vkFreeMemory(info.device, guard.memory, nullptr);
+        }
         guard.buffer = VK_NULL_HANDLE;
         guard.memory = VK_NULL_HANDLE;
         guard.words = nullptr;
@@ -7549,7 +7567,8 @@ struct DeviceState {
     VkDeviceMemory allocate(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags required,
                             VkMemoryPropertyFlags preferred, VkMemoryPropertyFlags* chosen = nullptr,
                             bool device_address = false, std::uint32_t* chosen_type = nullptr,
-                            VkImage dedicated_image = VK_NULL_HANDLE) const {
+                            VkImage dedicated_image = VK_NULL_HANDLE,
+                            leonida::sotm::Category cat = leonida::sotm::Category::Other) const {
         VkMemoryAllocateFlagsInfo flags_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
         flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
         for (const std::uint32_t i :
@@ -7620,13 +7639,12 @@ struct DeviceState {
                                  int(device_address));
             }
             if (allocated == VK_SUCCESS) {
-                if (dedicated_image != VK_NULL_HANDLE) {
-                    leonida::sotm::track_alloc(leonida::sotm::Category::TextureVram, requirements.size);
-                } else if (device_address) {
-                    leonida::sotm::track_alloc(leonida::sotm::Category::BufferVram, requirements.size);
-                } else {
-                    leonida::sotm::track_alloc(leonida::sotm::Category::Other, requirements.size);
+                leonida::sotm::Category actual_cat = cat;
+                if (actual_cat == leonida::sotm::Category::Other) {
+                    if (dedicated_image != VK_NULL_HANDLE) actual_cat = leonida::sotm::Category::TextureVram;
+                    else if (device_address) actual_cat = leonida::sotm::Category::BufferVram;
                 }
+                leonida::sotm::track_vk_alloc(reinterpret_cast<std::uint64_t>(out), actual_cat, requirements.size);
                 if (chosen) *chosen = memory.memoryTypes[i].propertyFlags;
                 if (chosen_type) *chosen_type = i;
                 if (leonida::spilled_to_host(required, preferred, memory.memoryTypes[i].propertyFlags))
@@ -8240,6 +8258,7 @@ public:
             auto& vk = device_.context->vk;
             if (buffer_) vk.vkDestroyBuffer(device_.info.device, buffer_, nullptr);
             if (memory_) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(memory_));
                 vk.vkFreeMemory(device_.info.device, memory_, nullptr);
                 device_.host_imports.fetch_sub(1, std::memory_order_relaxed);
             }
@@ -8437,11 +8456,18 @@ public:
         if (heap_.Type == D3D12_HEAP_TYPE_READBACK) host_preferred = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         if (heap_.Type == D3D12_HEAP_TYPE_UPLOAD && device_.upload_in_vram)
             host_preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        const leonida::sotm::Category buf_cat =
+            heap_.Type == D3D12_HEAP_TYPE_UPLOAD   ? leonida::sotm::Category::UploadRing
+          : heap_.Type == D3D12_HEAP_TYPE_READBACK ? leonida::sotm::Category::Staging
+          : (device_.info.ray_tracing && initial_state == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
+                                                   ? leonida::sotm::Category::BvhVram
+                                                   : leonida::sotm::Category::BufferVram;
         memory_ = host ? device_.allocate(requirements,
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                          host_preferred, &memory_flags_, addressable || need_bda)
+                                          host_preferred, &memory_flags_, addressable || need_bda, nullptr,
+                                          VK_NULL_HANDLE, buf_cat)
                        : device_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memory_flags_,
-                                          addressable || need_bda);
+                                          addressable || need_bda, nullptr, VK_NULL_HANDLE, buf_cat);
         if (!memory_ || vk.vkBindBufferMemory(device_.info.device, buffer_, memory_, 0) != VK_SUCCESS)
             return E_OUTOFMEMORY;
         if (addressable) {
@@ -8583,6 +8609,7 @@ public:
         const auto decline = [&](HRESULT hr) {
             if (buffer_) vk.vkDestroyBuffer(device_.info.device, buffer_, nullptr);
             if (memory_) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(memory_));
                 vk.vkFreeMemory(device_.info.device, memory_, nullptr);
                 device_.host_imports.fetch_sub(1, std::memory_order_relaxed);
             }
@@ -8626,6 +8653,8 @@ public:
                 if (vk.vkAllocateMemory(device_.info.device, &allocate, nullptr, &memory_) == VK_SUCCESS) {
                     memory_flags_ = device_.memory.memoryTypes[i].propertyFlags;
                     device_.host_imports.fetch_add(1, std::memory_order_relaxed);
+                    leonida::sotm::track_vk_alloc(reinterpret_cast<std::uint64_t>(memory_),
+                                                  leonida::sotm::Category::HostImports, bytes);
                 } else {
                     memory_ = VK_NULL_HANDLE;
                 }
@@ -8758,7 +8787,7 @@ public:
         memory_ = device_.allocate(requirements,
                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                    device_.upload_in_vram ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0, &memory_flags_,
-                                   need_bda);
+                                   need_bda, nullptr, VK_NULL_HANDLE, leonida::sotm::Category::ShadowBuffers);
         void* shadow = nullptr;
         if (!memory_ || vk.vkBindBufferMemory(device_.info.device, buffer_, memory_, 0) != VK_SUCCESS ||
             vk.vkMapMemory(device_.info.device, memory_, 0, VK_WHOLE_SIZE, 0, &shadow) != VK_SUCCESS)
@@ -9146,9 +9175,17 @@ public:
                     return E_OUTOFMEMORY;
                 }
                 if (!retry) {
-                    memory_ = device_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memory_flags_);
+                    const auto tex_cat = (desc_.Flags & attachment)
+                                             ? leonida::sotm::Category::RenderTargetVram
+                                             : leonida::sotm::Category::TextureVram;
+                    memory_ = device_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memory_flags_,
+                                               false, nullptr, VK_NULL_HANDLE, tex_cat);
                     if (memory_ && vk.vkBindImageMemory(device_.info.device, image_, memory_, 0) == VK_SUCCESS) break;
-                    if (memory_) { vk.vkFreeMemory(device_.info.device, memory_, nullptr); memory_ = VK_NULL_HANDLE; }
+                    if (memory_) {
+                        leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(memory_));
+                        vk.vkFreeMemory(device_.info.device, memory_, nullptr);
+                        memory_ = VK_NULL_HANDLE;
+                    }
                     retry = host_transfer_;  // a failed allocation/bind retries on the staging path too
                 }
                 if (!retry) return E_OUTOFMEMORY;
@@ -9309,7 +9346,8 @@ private:
                     vk.vkBindImageMemory, vk.vkDestroyImage, vk.vkFreeMemory, [&](VkDeviceSize size, std::uint32_t& type) {
                         auto page = pool_requirements;
                         page.size = size;
-                        return device_.allocate(page, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, false, &type);
+                        return device_.allocate(page, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, false, &type,
+                                                VK_NULL_HANDLE, leonida::sotm::Category::TextureVram);
                     });
                 if (pooled_image_) memory_flags_ = device_.memory.memoryTypes[pooled_image_->page->type].propertyFlags;
             }
@@ -9320,11 +9358,19 @@ private:
         if (!pooled_image_) {
             auto selected = requirements;
             selected.memoryTypeBits &= allowed_types;
+            const auto tex_cat = (desc_.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
+                                                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
+                                     ? leonida::sotm::Category::RenderTargetVram
+                                     : leonida::sotm::Category::TextureVram;
             memory_ = device_.allocate(selected, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memory_flags_, false,
-                                       &type, dedicated.requiresDedicatedAllocation ? image_ : VK_NULL_HANDLE);
+                                       &type, dedicated.requiresDedicatedAllocation ? image_ : VK_NULL_HANDLE,
+                                       tex_cat);
         }
         if (!pooled_image_ && (!memory_ || vk.vkBindImageMemory(device_.info.device, image_, memory_, 0) != VK_SUCCESS)) {
-            if (memory_) vk.vkFreeMemory(device_.info.device, memory_, nullptr);
+            if (memory_) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(memory_));
+                vk.vkFreeMemory(device_.info.device, memory_, nullptr);
+            }
             memory_ = VK_NULL_HANDLE;
             return false;
         }
@@ -9920,14 +9966,18 @@ private:
         VkDeviceMemory memory = VK_NULL_HANDLE;
         void* mapped = nullptr;
         const auto release = [&](HRESULT hr) {
-            if (memory) vk.vkFreeMemory(dev, memory, nullptr);  // unmaps it
+            if (memory) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(memory));
+                vk.vkFreeMemory(dev, memory, nullptr);  // unmaps it
+            }
             vk.vkDestroyBuffer(dev, staging.buffer, nullptr);
             return hr;
         };
         VkMemoryRequirements requirements{};
         vk.vkGetBufferMemoryRequirements(dev, staging.buffer, &requirements);
         memory = device_.allocate(requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                  write ? 0 : VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                                  write ? 0 : VK_MEMORY_PROPERTY_HOST_CACHED_BIT, nullptr, false, nullptr,
+                                  VK_NULL_HANDLE, leonida::sotm::Category::Staging);
         if (!memory || vk.vkBindBufferMemory(dev, staging.buffer, memory, 0) != VK_SUCCESS ||
             vk.vkMapMemory(dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
             return release(E_OUTOFMEMORY);
@@ -10336,6 +10386,7 @@ public:
             new leonida::TileHeapAllocation{memory, 0, desc_.SizeInBytes, memory_type},
             [device = device_.info.device, free = device_.context->vk.vkFreeMemory]
             (const leonida::TileHeapAllocation* allocation) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(allocation->memory));
                 free(device, allocation->memory, nullptr);
                 delete allocation;
             });
@@ -10383,13 +10434,16 @@ public:
             const VkMemoryRequirements requirements{desc_.SizeInBytes, leonida::tile_size_in_bytes,
                                                     memory_types};
             const auto memory = device_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0,
-                                                  nullptr, !image, &memory_type);
+                                                  nullptr, !image, &memory_type, VK_NULL_HANDLE,
+                                                  image ? leonida::sotm::Category::TextureVram
+                                                        : leonida::sotm::Category::BufferVram);
             if (!memory) return {};
             image_tiles_ = image;
             tile_allocation_ = std::shared_ptr<const leonida::TileHeapAllocation>(
                 new leonida::TileHeapAllocation{memory, 0, desc_.SizeInBytes, memory_type},
                 [device = device_.info.device, free = device_.context->vk.vkFreeMemory]
                 (const leonida::TileHeapAllocation* allocation) {
+                    leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(allocation->memory));
                     free(device, allocation->memory, nullptr);
                     delete allocation;
                 });
@@ -14293,11 +14347,25 @@ public:
             char text[4] = {};
             size_t length = 0;
             const bool sysmem = getenv_s(&length, text, "LEONIDA_UPLOAD_SYSMEM") == 0 && length > 1 && text[0] != '0';
-            state_.upload_in_vram = leonida::resizable_bar(state_.memory) && !sysmem;
-            std::fprintf(stderr, "[rt] d3d12: upload heaps in %s\n",
+            const bool has_bar = leonida::resizable_bar(state_.memory);
+            VkDeviceSize max_bar_mb = 0;
+            for (std::uint32_t i = 0; i < state_.memory.memoryTypeCount && i < VK_MAX_MEMORY_TYPES; ++i) {
+                const auto& t = state_.memory.memoryTypes[i];
+                if ((t.propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                        (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+                    t.heapIndex < state_.memory.memoryHeapCount &&
+                    (state_.memory.memoryHeaps[t.heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) {
+                    max_bar_mb = (std::max)(max_bar_mb, state_.memory.memoryHeaps[t.heapIndex].size >> 20);
+                }
+            }
+            state_.upload_in_vram = has_bar && !sysmem;
+            std::fprintf(stderr, "[rt] d3d12: upload heaps in %s (ReBAR capable=%s, max_bar_heap=%llu MiB)\n",
                          state_.upload_in_vram ? "VRAM (DEVICE_LOCAL | HOST_VISIBLE, Resizable BAR)"
                          : sysmem             ? "system memory (LEONIDA_UPLOAD_SYSMEM)"
-                                              : "system memory (no Resizable BAR)");
+                                              : "system memory (no Resizable BAR)",
+                         has_bar ? "yes" : "no", static_cast<unsigned long long>(max_bar_mb));
         }
         if (get_device)
             state_.bound_image_requirements = reinterpret_cast<PFN_vkGetImageMemoryRequirements2>(
@@ -14480,9 +14548,13 @@ public:
                 block.allocationSize = bytes;
                 block.memoryTypeIndex = type;
                 VkDeviceMemory out = VK_NULL_HANDLE;
-                return make(device, &block, nullptr, &out) == VK_SUCCESS ? out : VkDeviceMemory(VK_NULL_HANDLE);
+                if (make(device, &block, nullptr, &out) != VK_SUCCESS) return VkDeviceMemory(VK_NULL_HANDLE);
+                leonida::sotm::track_vk_alloc(reinterpret_cast<std::uint64_t>(out),
+                                              leonida::sotm::Category::TextureVram, bytes);
+                return out;
             },
             [device = info.device, free = state_.context->vk.vkFreeMemory](VkDeviceMemory block) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(block));
                 free(device, block, nullptr);
             });
         state_.context->mesh_queries = info.mesh_shader_queries;
@@ -14619,7 +14691,8 @@ public:
         state_.context->enable_copy_scratch(
             get_device,
             [this, index_scratch](const VkMemoryRequirements& requirements) {
-                return state_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, index_scratch);
+                return state_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, index_scratch,
+                                       nullptr, VK_NULL_HANDLE, leonida::sotm::Category::Staging);
             },
             scratch_extra, state_.families);
         if (info.buffer_device_address && info.physical && info.get_instance_proc) {
@@ -14635,7 +14708,9 @@ public:
                                                       [this](const VkMemoryRequirements& requirements) {
                                                           return state_.allocate(requirements, 0,
                                                                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                                                 nullptr, /*device_address=*/true);
+                                                                                 nullptr, /*device_address=*/true,
+                                                                                 nullptr, VK_NULL_HANDLE,
+                                                                                 leonida::sotm::Category::BufferVram);
                                                       },
                                                       state_.families);
             }
@@ -14655,7 +14730,8 @@ public:
                 }
             }
             state_.context->enable_depth24(get_device, [this](const VkMemoryRequirements& requirements) {
-                return state_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                return state_.allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, false, nullptr,
+                                       VK_NULL_HANDLE, leonida::sotm::Category::Staging);
             }, max_storage_range);
         }
         if (info.bindless && state_.context->loaded() && !create_bindless(get_device))
@@ -15047,14 +15123,18 @@ public:
                          static_cast<unsigned long long>(size.bytes >> 20),
                          static_cast<unsigned long long>(size.requested >> 20), leonida::arena_cap_name(size.capped));
         arena.memory = state_.allocate(requirements, leonida::kArenaRequiredMemory, leonida::kArenaPreferredMemory,
-                                       nullptr, true, &arena.memory_type);
+                                       nullptr, true, &arena.memory_type, VK_NULL_HANDLE,
+                                       leonida::sotm::Category::BufferVram);
         void* mapped = nullptr;
         if (!arena.memory || vk.vkBindBufferMemory(state_.info.device, arena.buffer, arena.memory, 0) != VK_SUCCESS ||
             vk.vkMapMemory(state_.info.device, arena.memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
             // Without an arena every buffer keeps its own memory; a leftover handle would make them addressable
             // with heap base 0, so their VAs would be raw device addresses above 4 GiB.
             vk.vkDestroyBuffer(state_.info.device, arena.buffer, nullptr);
-            if (arena.memory) vk.vkFreeMemory(state_.info.device, arena.memory, nullptr);
+            if (arena.memory) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(arena.memory));
+                vk.vkFreeMemory(state_.info.device, arena.memory, nullptr);
+            }
             arena.buffer = VK_NULL_HANDLE;
             arena.memory = VK_NULL_HANDLE;
             return false;
@@ -15225,7 +15305,10 @@ public:
             leonida::fsdraw::forget_arena(state_.arena.mapped);
             auto& vk = state_.context->vk;
             vk.vkDestroyBuffer(state_.info.device, state_.arena.buffer, nullptr);
-            if (state_.arena.memory) vk.vkFreeMemory(state_.info.device, state_.arena.memory, nullptr);
+            if (state_.arena.memory) {
+                leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(state_.arena.memory));
+                vk.vkFreeMemory(state_.info.device, state_.arena.memory, nullptr);
+            }
         }
         state_.finish_heavy_cache();
         if (state_.pipeline_cache_handle) {
@@ -18669,9 +18752,11 @@ public:
                 allocate.allocationSize = size;
                 allocate.memoryTypeIndex = i;
                 if (state_.context->vk.vkAllocateMemory(state_.info.device, &allocate, nullptr, &memory) ==
-                    VK_SUCCESS)
+                    VK_SUCCESS) {
                     memory_type = i;
-                else
+                    leonida::sotm::track_vk_alloc(reinterpret_cast<std::uint64_t>(memory),
+                                                  leonida::sotm::Category::HostImports, size);
+                } else
                     memory = VK_NULL_HANDLE;
             }
             if (memory) break;

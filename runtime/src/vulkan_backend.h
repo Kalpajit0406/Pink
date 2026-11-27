@@ -32,6 +32,7 @@
 #include "submit_phases.h"
 #include "pipeline_wait.h"
 #include "title_va_alias.h"
+#include "sotm_accounting.h"
 #include "xdxr_build.h"
 
 #include <algorithm>
@@ -554,6 +555,7 @@ public:
                 vk.vkDestroyBuffer(device, reinterpret_cast<VkBuffer>(item.handle), nullptr);
                 break;
             case Kind::device_memory:
+                leonida::sotm::track_vk_free(item.handle);
                 vk.vkFreeMemory(device, reinterpret_cast<VkDeviceMemory>(item.handle), nullptr);
                 break;
             case Kind::image_memory:

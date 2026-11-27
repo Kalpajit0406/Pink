@@ -2,6 +2,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "sotm_accounting.h"
+
 #include <algorithm>
 #include <bit>
 #include <cstdint>
@@ -23,7 +25,10 @@ struct TitleImagePage {
     std::vector<std::uint32_t> returned;
 
     ~TitleImagePage() {
-        if (memory) free_memory(device, memory, nullptr);
+        if (memory) {
+            leonida::sotm::track_vk_free(reinterpret_cast<std::uint64_t>(memory));
+            free_memory(device, memory, nullptr);
+        }
     }
 
     bool take(std::uint32_t& slot) {

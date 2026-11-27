@@ -27,7 +27,26 @@ int main() {
     std::string json = acc.to_json(1.0, budget);
     assert(json.find("\"texture_vram\":32") != std::string::npos);
     assert(json.find("\"guest_heap_committed\":128") != std::string::npos);
-    std::printf("[test] Accounting passed. JSON: %s\n", json.c_str());
+
+    // 1b. Test symmetric VkDeviceMemory tracking across ShadowBuffers / HostImports
+    acc.track_vk_alloc(0x1001, leonida::sotm::Category::ShadowBuffers, 1024 * 1024 * 48);
+    acc.track_vk_alloc(0x1002, leonida::sotm::Category::HostImports, 1024 * 1024 * 12);
+    acc.track_evict(1024 * 1024 * 4);
+    acc.track_decommit(1024 * 1024 * 8);
+    acc.track_mip_cap(1024 * 1024 * 16);
+    assert(acc.get_bytes(leonida::sotm::Category::ShadowBuffers) == 1024 * 1024 * 48);
+    assert(acc.get_bytes(leonida::sotm::Category::HostImports) == 1024 * 1024 * 12);
+    acc.track_vk_free(0x1001);
+    acc.track_vk_free(0x1001);  // idempotent double-free guard
+    acc.track_vk_free(0x1002);
+    assert(acc.get_bytes(leonida::sotm::Category::ShadowBuffers) == 0);
+    assert(acc.get_bytes(leonida::sotm::Category::HostImports) == 0);
+    std::string json_ops = acc.to_json(2.0, budget);
+    assert(json_ops.find("\"shadow_buffers\":0") != std::string::npos);
+    assert(json_ops.find("\"evictions\":1") != std::string::npos);
+    assert(json_ops.find("\"decommits\":1") != std::string::npos);
+    assert(json_ops.find("\"mip_capped\":1") != std::string::npos);
+    std::printf("[test] Accounting passed. JSON: %s\n", json_ops.c_str());
 
     // 2. Test Page Table
     auto& pt = leonida::sotm::PageTable::instance();

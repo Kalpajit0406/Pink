@@ -2356,6 +2356,22 @@ BOOL title_free_impl(LPVOID address, SIZE_T size, DWORD free_type) {
         if (decommit_end <= start) allocation_extent(address, decommit_end);
     }
     BOOL result;
+    uint64_t free_commit = 0, free_reserve = 0;
+    if ((releases || (free_type & MEM_DECOMMIT)) && address) {
+        const uintptr_t query_end = releases ? release_end : decommit_end;
+        if (query_end > start) {
+            for (uintptr_t at = start; at < query_end;) {
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) || mbi.State == MEM_FREE) break;
+                const uintptr_t seg_end = (std::min)(query_end, reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize);
+                const uint64_t seg_bytes = seg_end > at ? (seg_end - at) : 0;
+                if (mbi.State == MEM_COMMIT) free_commit += seg_bytes;
+                if (releases && (mbi.State == MEM_COMMIT || mbi.State == MEM_RESERVE)) free_reserve += seg_bytes;
+                if (seg_end <= at) break;
+                at = seg_end;
+            }
+        }
+    }
     if (releases) {
         result = title_release(address, size, free_type, _ReturnAddress());
     } else if (free_type & (MEM_PRESERVE_PLACEHOLDER | MEM_COALESCE_PLACEHOLDERS)) {
@@ -2367,6 +2383,12 @@ BOOL title_free_impl(LPVOID address, SIZE_T size, DWORD free_type) {
         result = VirtualFree(address, size, free_type);
     }
     // A release of size 0 frees the whole reservation, whose extent is not known here: a change anywhere.
+    if (result && free_commit) {
+        leonida::sotm::track_free(leonida::sotm::Category::GuestHeapCommitted, free_commit);
+    }
+    if (result && releases && free_reserve) {
+        leonida::sotm::track_free(leonida::sotm::Category::GuestHeapReserved, free_reserve);
+    }
     if (result && size) leonida::title_memory_map::changed(address, size);
     else if (result) leonida::title_memory_map::changed();
     if (result && (free_type & MEM_DECOMMIT)) note_unwatched_change(address, size, 0, true);

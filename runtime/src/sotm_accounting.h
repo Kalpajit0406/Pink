@@ -11,6 +11,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -32,6 +34,8 @@ enum class Category : uint8_t {
     TextureVram,
     RenderTargetVram,
     BufferVram,
+    ShadowBuffers,
+    HostImports,
     BvhVram,
     UploadRing,
     Staging,
@@ -52,6 +56,8 @@ inline const char* category_name(Category cat) {
     case Category::TextureVram:        return "texture_vram";
     case Category::RenderTargetVram:   return "rendertarget_vram";
     case Category::BufferVram:         return "buffer_vram";
+    case Category::ShadowBuffers:      return "shadow_buffers";
+    case Category::HostImports:        return "host_imports";
     case Category::BvhVram:            return "bvh_vram";
     case Category::UploadRing:         return "upload_ring";
     case Category::Staging:            return "staging";
@@ -88,6 +94,53 @@ public:
                 if (val.compare_exchange_weak(current, next, std::memory_order_relaxed)) break;
             }
         }
+    }
+
+    // Tracks a VkDeviceMemory handle by exact category so deferred/async frees match allocations symmetrically.
+    void track_vk_alloc(uint64_t handle, Category cat, uint64_t bytes) {
+        if (!handle || !bytes) return;
+        std::pair<Category, uint64_t> prev{};
+        bool had_prev = false;
+        {
+            std::lock_guard lock(vk_allocs_mutex_);
+            auto [it, inserted] = vk_allocs_.emplace(handle, std::make_pair(cat, bytes));
+            if (!inserted) {
+                prev = it->second;
+                it->second = {cat, bytes};
+                had_prev = true;
+            }
+        }
+        if (had_prev) track_free(prev.first, prev.second);
+        track_alloc(cat, bytes);
+    }
+
+    void track_vk_free(uint64_t handle) {
+        if (!handle) return;
+        std::pair<Category, uint64_t> found{};
+        bool erased = false;
+        {
+            std::lock_guard lock(vk_allocs_mutex_);
+            auto it = vk_allocs_.find(handle);
+            if (it != vk_allocs_.end()) {
+                found = it->second;
+                vk_allocs_.erase(it);
+                erased = true;
+            }
+        }
+        if (erased) track_free(found.first, found.second);
+    }
+
+    void track_evict(uint64_t bytes) {
+        evictions_.fetch_add(1, std::memory_order_relaxed);
+        evicted_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    void track_decommit(uint64_t bytes) {
+        decommits_.fetch_add(1, std::memory_order_relaxed);
+        decommitted_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    void track_mip_cap(uint64_t saved_bytes) {
+        mip_capped_.fetch_add(1, std::memory_order_relaxed);
+        mip_saved_bytes_.fetch_add(saved_bytes, std::memory_order_relaxed);
     }
 
     void set_gauge(Category cat, uint64_t bytes) {
@@ -159,8 +212,16 @@ public:
                 (i > 0 ? "," : ""), category_name(cat), (unsigned long long)mb);
         }
 
-        if (n < (int)sizeof(buf) - 2) {
-            buf[n++] = '}';
+        n += std::snprintf(buf + n, sizeof(buf) - n,
+            "},\"sotm_ops\":{\"evictions\":%llu,\"evicted_mb\":%llu,\"decommits\":%llu,\"decommitted_mb\":%llu,\"mip_capped\":%llu,\"mip_saved_mb\":%llu}",
+            (unsigned long long)evictions_.load(std::memory_order_relaxed),
+            (unsigned long long)(evicted_bytes_.load(std::memory_order_relaxed) >> 20),
+            (unsigned long long)decommits_.load(std::memory_order_relaxed),
+            (unsigned long long)(decommitted_bytes_.load(std::memory_order_relaxed) >> 20),
+            (unsigned long long)mip_capped_.load(std::memory_order_relaxed),
+            (unsigned long long)(mip_saved_bytes_.load(std::memory_order_relaxed) >> 20));
+
+        if (n < (int)sizeof(buf) - 1) {
             buf[n++] = '}';
             buf[n] = '\0';
         }
@@ -253,6 +314,11 @@ private:
     }
 
     std::atomic<uint64_t> categories_[static_cast<size_t>(Category::Count)];
+    std::mutex vk_allocs_mutex_;
+    std::unordered_map<uint64_t, std::pair<Category, uint64_t>> vk_allocs_;
+    std::atomic<uint64_t> evictions_{0}, evicted_bytes_{0};
+    std::atomic<uint64_t> decommits_{0}, decommitted_bytes_{0};
+    std::atomic<uint64_t> mip_capped_{0}, mip_saved_bytes_{0};
     std::atomic<bool> reporter_running_{false};
     int interval_s_{5};
     std::string log_path_;
@@ -262,6 +328,13 @@ private:
 
 inline void track_alloc(Category cat, uint64_t bytes) { Accounting::instance().track_alloc(cat, bytes); }
 inline void track_free(Category cat, uint64_t bytes) { Accounting::instance().track_free(cat, bytes); }
+inline void track_vk_alloc(uint64_t handle, Category cat, uint64_t bytes) {
+    Accounting::instance().track_vk_alloc(handle, cat, bytes);
+}
+inline void track_vk_free(uint64_t handle) { Accounting::instance().track_vk_free(handle); }
+inline void track_evict(uint64_t bytes) { Accounting::instance().track_evict(bytes); }
+inline void track_decommit(uint64_t bytes) { Accounting::instance().track_decommit(bytes); }
+inline void track_mip_cap(uint64_t saved_bytes) { Accounting::instance().track_mip_cap(saved_bytes); }
 inline void set_gauge(Category cat, uint64_t bytes) { Accounting::instance().set_gauge(cat, bytes); }
 inline uint64_t get_bytes(Category cat) { return Accounting::instance().get_bytes(cat); }
 inline void dump_mem_map(FILE* out = stderr) { Accounting::instance().dump_mem_map(out); }
