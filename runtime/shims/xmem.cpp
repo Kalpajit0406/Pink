@@ -49,6 +49,7 @@
 #include "../src/title_geometry_watch.h"
 #include "../src/title_va_alias.h"
 #include "../src/sotm_accounting.h"
+#include "../src/sotm_page_table.h"
 #include "../src/value_write_sink.h"
 
 namespace {
@@ -1653,6 +1654,8 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
     DWORD read_note_size = 0;
     bool plant_read = false, promote = false, from_title = false;
     bool queried = false;
+    const uintptr_t page64 = accessed & ~(leonida::sotm::kPageSize - 1);
+    const bool sotm_device_only = leonida::sotm::page_table().is_device_only(page64);
     {
         const FaultLockShared lock;
         result = commit_mapped_page(address, accessed, protect);
@@ -1672,7 +1675,7 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
             // the title's changes while it is held shared (each change of xmem's holds it exclusively, and a view of
             // xmem's at this page would have been found above). A committed mapped page with no view here is someone
             // else's view, not a mapping of xmem's in flight.
-            if (where != kNoReservation || access == 1)
+            if (where != kNoReservation || access == 1 || sotm_device_only)
                 queried = VirtualQuery(reinterpret_cast<const void*>(accessed), &seen, sizeof(seen)) != 0;
             const auto pc = reinterpret_cast<uintptr_t>(record->ExceptionAddress);
             uintptr_t caller = 0;
@@ -1698,10 +1701,25 @@ LONG CALLBACK physical_page_fault(EXCEPTION_POINTERS* info) {
     char plant_note[256];
     DWORD plant_note_size = 0;
     bool planted = false, committed = false, escalated = false;
-    if (!answered && title_page && queried) {
+    if (!answered && (title_page || sotm_device_only) && queried) {
         if (access == 1) fault_race_point(rt::xmem::kFaultAfterLook);
         if (committed_meanwhile(seen, access, accessed)) {
             answered = true;
+        } else if (sotm_device_only && seen.State == MEM_RESERVE && seen.Type == MEM_PRIVATE) {
+            const FaultLockExclusive lock;
+            escalated = true;
+            queried = VirtualQuery(reinterpret_cast<const void*>(accessed), &seen, sizeof(seen)) != 0;
+            if (queried && seen.State == MEM_RESERVE && seen.Type == MEM_PRIVATE &&
+                leonida::sotm::page_table().is_device_only(page64)) {
+                if (VirtualAlloc(reinterpret_cast<void*>(page64), leonida::sotm::kPageSize, MEM_COMMIT,
+                                 PAGE_READWRITE)) {
+                    leonida::sotm::page_table().recommit_on_fault(page64, access == 0);
+                    committed = true;
+                    answered = true;
+                }
+            } else if (queried && committed_meanwhile(seen, access, accessed)) {
+                answered = true;
+            }
         } else if ((access == 1 || plant_read) && (seen.State == MEM_RESERVE || seen.State == MEM_FREE || promote)) {
             // Only reserved: a window page the title never mapped, or a section page of the title's own not committed
             // yet. Free, under the shared lock, in memory the tables still name as the title's: not a change of xmem's
@@ -2396,8 +2414,12 @@ BOOL title_free_impl(LPVOID address, SIZE_T size, DWORD free_type) {
         leonida::title_write_watch::remove(reinterpret_cast<uintptr_t>(address));
     if (result && releases && release_end > start)
         leonida::geometry_writes::note_released(start, release_end);
-    if (result && (free_type & MEM_DECOMMIT) && decommit_end > start)
+    if (result && (free_type & MEM_DECOMMIT) && decommit_end > start) {
         leonida::geometry_writes::note_released(start, decommit_end);
+        leonida::sotm::page_table().invalidate_range(start, decommit_end - start);
+    }
+    if (result && releases && release_end > start)
+        leonida::sotm::page_table().invalidate_range(start, release_end - start);
     return result;
 }
 

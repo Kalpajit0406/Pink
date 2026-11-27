@@ -2,6 +2,7 @@
 #include "../src/nvidia_drs.h"
 #include "../src/sotm_accounting.h"
 #include "../src/sotm_budget.h"
+#include "../src/sotm_page_table.h"
 // A Vulkan-backed ID3D12Device (PC ABI) for the Xbox-ABI device proxy (d3d12_xs_device.cpp) to forward to.
 // Implemented: queues, allocators, command lists, fences, descriptor heaps, render-target and depth-stencil views,
 // committed buffers and textures (1D, 1D arrays, 2D, multisampled 2D, 3D) and their 1/2/3 variants, allocation
@@ -13588,6 +13589,7 @@ struct TitleTexture {
     bool full_hashed = false;
     bool every_byte() const { return mapped && (async_texture_refresh() || layout.layout.size <= (4u << 20)); }
     std::uint32_t first_mip = 0;
+    bool handed_off = false;
     std::uint64_t last_used_ms = 0;
     std::uint64_t fills = 0;
 };
@@ -15671,7 +15673,7 @@ public:
         std::uint64_t checked = 0, filled = 0, fill_pass_ns = 0;
         const auto visit = [&](TitleTexture& t) {
             // A slot-133 texture's guessed layout (no slot-70 view yet) is only used once the title maps it.
-            if (t.gpu_written || !t.layout_known || !t.resource ||
+            if (t.gpu_written || !t.layout_known || !t.resource || (t.handed_off && !t.stale) ||
                 ((t.layout_guessed || t.layout_from_xg) && !t.mapped && !t.stale))
                 return;
             const std::uint64_t span = t.layout.layout.size;
@@ -16137,6 +16139,7 @@ private:
         ++t.fills;
         ++title_stats_.fills;
         title_stats_.fill_bytes += span;
+        maybe_handoff_title_texture(t);
         return true;
     }
 
@@ -16472,7 +16475,7 @@ private:
         for (const auto& [addr, ptr] : state_.title_textures) {
             const TitleTexture& t = *ptr;
             if (!t.owned || !t.resource || t.mapped || t.gpu_written || !t.fills || t.unbound_bytes ||
-                !t.backing_bytes)
+                t.handed_off || !t.backing_bytes)
                 continue;
             if (now_ms >= t.last_used_ms + age_ms) {
                 candidates.push_back({t.last_used_ms, addr, t.backing_bytes});
@@ -16491,6 +16494,46 @@ private:
             state_.title_textures.erase(it);
             evicted += c.bytes;
             leonida::sotm::Accounting::instance().track_evict(c.bytes);
+        }
+    }
+
+    // Single-owner handoff (Phase 3): after a streamed DStorage-provenance texture completes GPU upload,
+    // decommit strictly interior 64 KiB private pages so the GPU owns the sole physical copy.
+    void maybe_handoff_title_texture(TitleTexture& t) {
+        const auto& cfg = leonida::sotm::budget_config();
+        if (!cfg.handoff) return;
+        if (!t.owned || t.mapped || t.gpu_written || !t.fills || t.unbound_bytes || t.handed_off || t.first_mip)
+            return;
+        const std::uintptr_t begin = static_cast<std::uintptr_t>(t.cpu);
+        const std::uintptr_t end = begin + static_cast<std::uintptr_t>(t.layout.layout.size);
+        const std::uintptr_t aligned_begin =
+            (begin + leonida::sotm::kPageSize - 1) & ~(leonida::sotm::kPageSize - 1);
+        const std::uintptr_t aligned_end = end & ~(leonida::sotm::kPageSize - 1);
+        if (aligned_end <= aligned_begin) return;
+        bool shared_granule = false;
+        state_.texture_ranges.overlapping(aligned_begin, aligned_end, [&](std::uint64_t key) {
+            if (key != t.address) shared_granule = true;
+        });
+        if (shared_granule) return;
+        if (!leonida::sotm::page_table().can_decommit(aligned_begin, aligned_end)) return;
+        for (std::uintptr_t at = aligned_begin; at < aligned_end;) {
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) ||
+                mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE ||
+                (mbi.Protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE | PAGE_GUARD)) ||
+                !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)))
+                return;
+            const std::uintptr_t seg_end = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+            if (seg_end <= at) return;
+            at = seg_end;
+        }
+        leonida::sotm::page_table().mark_device_only(aligned_begin, aligned_end);
+        const std::size_t decommit_bytes = aligned_end - aligned_begin;
+        if (VirtualFree(reinterpret_cast<void*>(aligned_begin), decommit_bytes, MEM_DECOMMIT)) {
+            t.handed_off = true;
+            leonida::sotm::Accounting::instance().track_decommit(decommit_bytes);
+        } else {
+            leonida::sotm::page_table().mark_cpu_write(aligned_begin, decommit_bytes);
         }
     }
 
@@ -16535,6 +16578,7 @@ private:
 
     // A mapped texture can lose its pages between views or between refreshes.
     bool title_texture_readable(TitleTexture& t) {
+        if (t.handed_off && !t.stale) return false;
         const bool guard = check_pages_before_read();
         if (!guard && !t.memory.pending()) return true;
         const bool mapped = t.mapped && refresh_mapped_pages();
@@ -16554,6 +16598,7 @@ private:
     // checked at once). After the load a title thread spent a fifth of its time hashing textures here, view by view
     // (speed-24 wait sampler: refresh_title_texture < write_placed_texture_view < slot 70).
     void refresh_title_texture(TitleTexture& t) {
+        if (t.handed_off && !t.stale) return;
         // LEONIDA_TITLE_FILL_ASYNC=1: a view neither hashes nor fills. A texture never filled or known stale goes to
         // the fill worker; later changes are found by the periodic pass and the write journal, as before.
         if (title_fill_async()) {
@@ -16592,6 +16637,8 @@ private:
                     t.stale = true;
                     return 0;
                 }
+        if (t.handed_off && !t.stale) return 0;
+        if (t.stale) t.handed_off = false;
         const std::uint64_t span = layout.layout.size;
         if (!title_texture_readable(t)) return 0;
         title_tiled_.resize(std::size_t(span));
@@ -16670,6 +16717,7 @@ private:
         ++t.fills;
         ++title_stats_.fills;
         title_stats_.fill_bytes += span;
+        maybe_handoff_title_texture(t);
         return span;
     }
 

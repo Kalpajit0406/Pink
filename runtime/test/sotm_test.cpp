@@ -107,7 +107,27 @@ int main() {
     assert(leonida::sotm::choose_first_mip(4096, 4096, 13, leonida::sotm::PressureTier::Critical, 1024) == 4);
     assert(leonida::sotm::choose_first_mip(4096, 4096, 1, leonida::sotm::PressureTier::OverBudget, 1024) == 0);
 
-    std::printf("[test] Page table and budget pressure tests passed.\n");
+    // Phase 3 single-owner handoff, 64-bit tag isolation, and >= 3 fault ColdShared hysteresis
+    const uintptr_t p3_addr = 0x200000000ULL;
+    const uintptr_t p3_alias = p3_addr + (1ULL << 36);  // differs only in bit 36 (previous collision point)
+    pt.record_provenance(p3_addr, 64 * 1024, 7, 0x1000, 0x1000, 1);
+    assert(pt.can_decommit(p3_addr, p3_addr + 64 * 1024));
+    assert(!pt.can_decommit(p3_alias, p3_alias + 64 * 1024));
+    pt.mark_device_only(p3_addr, p3_addr + 64 * 1024);
+    assert(pt.is_device_only(p3_addr));
+    assert(!pt.is_device_only(p3_alias));
+    assert(pt.recommit_on_fault(p3_addr, false));
+    assert(pt.get_page(p3_addr)->faultCount == 1);
+    assert(pt.get_page(p3_addr)->cls != leonida::sotm::AllocClass::ColdShared);
+    pt.record_provenance(p3_addr, 64 * 1024, 7, 0x1000, 0x1000, 1);  // resets faultCount on fresh stream
+    pt.mark_device_only(p3_addr, p3_addr + 64 * 1024);
+    assert(pt.recommit_on_fault(p3_addr, true));  // read fault pins permanently
+    assert(pt.get_page(p3_addr)->cls == leonida::sotm::AllocClass::ColdShared);
+    assert(!pt.can_decommit(p3_addr, p3_addr + 64 * 1024));
+    pt.invalidate_range(p3_addr, 64 * 1024);
+    assert(!pt.is_device_only(p3_addr));
+
+    std::printf("[test] Page table, handoff, and budget pressure tests passed.\n");
     std::printf("[test] All SOTM unit tests passed successfully!\n");
     return 0;
 }

@@ -42,10 +42,15 @@ struct PageEntry {
     PageState   state = PageState::HostOnly;
     AllocClass  cls = AllocClass::CpuOnly;
     uint16_t    faultCount = 0;
+    uint32_t    tag = 0;               // (addr >> 36) | 0x80000000u disambiguates 64-bit aliasing above bits 16..35
     uint32_t    lastUseFrame = 0;
     uint32_t    deviceBlock = kInvalidIndex;
     uint32_t    provIndex = kInvalidIndex;
 };
+
+inline uint32_t page_tag(uintptr_t addr) {
+    return static_cast<uint32_t>(addr >> 36) | 0x80000000u;
+}
 
 class PageTable {
 public:
@@ -95,6 +100,7 @@ public:
         for (uintptr_t p = start_page; p < end_page; p += kPageSize) {
             PageEntry* entry = get_or_create_page(p);
             if (entry) {
+                entry->tag = page_tag(p);
                 entry->state = state;
                 entry->cls = cls;
             }
@@ -108,7 +114,7 @@ public:
 
         for (uintptr_t p = start_page; p < end_page; p += kPageSize) {
             PageEntry* entry = get_page(p);
-            if (entry) {
+            if (entry && entry->tag == page_tag(p)) {
                 if (entry->state == PageState::HostOnly || entry->state == PageState::BothDirty) {
                     entry->state = PageState::BothClean;
                 }
@@ -124,11 +130,76 @@ public:
 
         for (uintptr_t p = start_page; p < end_page; p += kPageSize) {
             PageEntry* entry = get_page(p);
-            if (entry) {
+            if (entry && entry->tag == page_tag(p)) {
                 if (entry->state == PageState::BothClean || entry->state == PageState::DeviceOnly) {
                     entry->state = PageState::BothDirty;
                 }
                 entry->provIndex = kInvalidIndex; // Page modified; provenance invalidated
+            }
+        }
+    }
+
+    bool can_decommit(uintptr_t aligned_begin, uintptr_t aligned_end) const {
+        if (aligned_end <= aligned_begin) return false;
+        for (uintptr_t p = aligned_begin; p < aligned_end; p += kPageSize) {
+            const size_t dir_idx = (p >> 25) & (kDirSize - 1);
+            const size_t leaf_idx = (p >> 16) & (kLeafSize - 1);
+            const LeafTable* leaf = root_[dir_idx].load(std::memory_order_acquire);
+            if (!leaf) return false;
+            const PageEntry& entry = leaf->entries[leaf_idx];
+            if (entry.tag != page_tag(p) || entry.cls == AllocClass::ColdShared ||
+                entry.state == PageState::DeviceOnly || entry.state == PageState::EvictedRestreamable ||
+                entry.provIndex == kInvalidIndex) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void mark_device_only(uintptr_t aligned_begin, uintptr_t aligned_end) {
+        for (uintptr_t p = aligned_begin; p < aligned_end; p += kPageSize) {
+            PageEntry* entry = get_page(p);
+            if (entry && entry->tag == page_tag(p)) {
+                entry->state = PageState::DeviceOnly;
+            }
+        }
+    }
+
+    bool is_device_only(uintptr_t addr) const {
+        const size_t dir_idx = (addr >> 25) & (kDirSize - 1);
+        const size_t leaf_idx = (addr >> 16) & (kLeafSize - 1);
+        const LeafTable* leaf = root_[dir_idx].load(std::memory_order_acquire);
+        if (!leaf) return false;
+        const PageEntry& entry = leaf->entries[leaf_idx];
+        return entry.tag == page_tag(addr) && entry.state == PageState::DeviceOnly;
+    }
+
+    bool recommit_on_fault(uintptr_t addr, bool pin_permanently = false) {
+        PageEntry* entry = get_page(addr);
+        if (!entry || entry->tag != page_tag(addr) || entry->state != PageState::DeviceOnly) return false;
+        if (pin_permanently) {
+            entry->faultCount = 3;
+        } else if (entry->faultCount < 0xFFFFu) {
+            ++entry->faultCount;
+        }
+        if (entry->faultCount >= 3) entry->cls = AllocClass::ColdShared;
+        entry->state = PageState::BothDirty;
+        entry->provIndex = kInvalidIndex;
+        return true;
+    }
+
+    void invalidate_range(uintptr_t base, size_t size) {
+        if (!base || !size) return;
+        const uintptr_t start_page = base & ~(kPageSize - 1);
+        const uintptr_t end_page = (base + size + kPageSize - 1) & ~(kPageSize - 1);
+        for (uintptr_t p = start_page; p < end_page; p += kPageSize) {
+            PageEntry* entry = get_page(p);
+            if (entry && entry->tag == page_tag(p)) {
+                entry->state = PageState::HostOnly;
+                entry->cls = AllocClass::CpuOnly;
+                entry->faultCount = 0;
+                entry->provIndex = kInvalidIndex;
+                entry->tag = 0;
             }
         }
     }
@@ -149,6 +220,9 @@ public:
         for (uintptr_t p = start_page; p < end_page; p += kPageSize) {
             PageEntry* entry = get_or_create_page(p);
             if (entry) {
+                entry->tag = page_tag(p);
+                entry->faultCount = 0;
+                entry->cls = AllocClass::UploadOnce;
                 entry->provIndex = idx;
             }
         }
@@ -162,7 +236,9 @@ public:
         LeafTable* leaf = root_[dir_idx].load(std::memory_order_acquire);
         if (!leaf) return nullptr;
 
-        const uint32_t idx = leaf->entries[leaf_idx].provIndex;
+        const PageEntry& entry = leaf->entries[leaf_idx];
+        if (entry.tag != page_tag(addr)) return nullptr;
+        const uint32_t idx = entry.provIndex;
         if (idx == kInvalidIndex || idx >= provenance_table_.size()) return nullptr;
         return &provenance_table_[idx];
     }
