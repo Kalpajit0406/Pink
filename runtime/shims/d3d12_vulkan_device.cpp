@@ -7574,8 +7574,8 @@ struct DeviceState {
             const bool retry = recent < 32 || recovered_total.load(std::memory_order_relaxed) * 16 >= recent ||
                                failures.load(std::memory_order_relaxed) % 64 == 0;
             VkResult allocated = VK_ERROR_OUT_OF_HOST_MEMORY;
-            for (int attempt = 0; attempt < (retry ? 6 : 1) && allocated == VK_ERROR_OUT_OF_HOST_MEMORY; ++attempt) {
-                if (attempt) Sleep(attempt);
+            for (int attempt = 0; attempt < (retry ? 6 : 1) && (allocated == VK_ERROR_OUT_OF_HOST_MEMORY || allocated == VK_ERROR_OUT_OF_DEVICE_MEMORY); ++attempt) {
+                if (attempt) Sleep(attempt * 2);
                 std::lock_guard serial(memory_mutex());
                 allocated = context->vk.vkAllocateMemory(info.device, &allocate, nullptr, &out);
                 if (attempt == 1 && retried.fetch_add(1, std::memory_order_relaxed) + 1 >= 64) {
@@ -7588,9 +7588,10 @@ struct DeviceState {
                     static std::atomic<int> recovered{0};
                     if (recovered.fetch_add(1, std::memory_order_relaxed) < 8)
                         std::fprintf(stderr,
-                                     "[rt] d3d12: vkAllocateMemory succeeded on retry %d after out-of-host-memory (%llu "
+                                     "[rt] d3d12: vkAllocateMemory succeeded on retry %d after %s (%llu "
                                      "bytes, type %u)\n",
-                                     attempt, static_cast<unsigned long long>(requirements.size), i);
+                                     attempt, (allocated == VK_ERROR_OUT_OF_DEVICE_MEMORY ? "out-of-device-memory" : "out-of-host-memory"),
+                                     static_cast<unsigned long long>(requirements.size), i);
                 }
             }
             if (allocated == VK_ERROR_OUT_OF_HOST_MEMORY) failures.fetch_add(1, std::memory_order_relaxed);
@@ -22197,6 +22198,52 @@ HRESULT create_vulkan_device_standalone(REFIID riid, void** out, QueueTestSettin
         info.host_pointer_alignment = host_memory.minImportedHostPointerAlignment;
     }
 
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT static_cast<VkStructureType>(1000238000)
+    typedef struct VkPhysicalDeviceMemoryPriorityFeaturesEXT {
+        VkStructureType sType;
+        void* pNext;
+        VkBool32 memoryPriority;
+    } VkPhysicalDeviceMemoryPriorityFeaturesEXT;
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT static_cast<VkStructureType>(1000412000)
+    typedef struct VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT {
+        VkStructureType sType;
+        void* pNext;
+        VkBool32 pageableDeviceLocalMemory;
+    } VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT;
+#endif
+
+    info.memory_priority = has_device_extension("VK_EXT_memory_priority");
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT memory_priority_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    if (info.memory_priority) {
+        VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &memory_priority_features};
+        vkGetPhysicalDeviceFeatures2(info.physical, &query);
+        if (memory_priority_features.memoryPriority == VK_TRUE) {
+            memory_priority_features.pNext = *v13.next();
+            *v13.next() = &memory_priority_features;
+        } else {
+            info.memory_priority = false;
+        }
+    }
+
+    info.pageable_device_local_memory = has_device_extension("VK_EXT_pageable_device_local_memory");
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
+    if (info.pageable_device_local_memory) {
+        VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &pageable_features};
+        vkGetPhysicalDeviceFeatures2(info.physical, &query);
+        if (pageable_features.pageableDeviceLocalMemory == VK_TRUE) {
+            pageable_features.pNext = *v13.next();
+            *v13.next() = &pageable_features;
+        } else {
+            info.pageable_device_local_memory = false;
+        }
+    }
+
     VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &enable12};
     device_info.queueCreateInfoCount = std::uint32_t(queue_infos.size());
     device_info.pQueueCreateInfos = queue_infos.data();
@@ -22254,9 +22301,7 @@ HRESULT create_vulkan_device_standalone(REFIID riid, void** out, QueueTestSettin
     info.memory_budget = has_device_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (info.memory_budget) device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     // Optional: VK_EXT_memory_priority and VK_EXT_pageable_device_local_memory for WDDM residency priority hints
-    info.memory_priority = has_device_extension("VK_EXT_memory_priority");
     if (info.memory_priority) device_extensions.push_back("VK_EXT_memory_priority");
-    info.pageable_device_local_memory = has_device_extension("VK_EXT_pageable_device_local_memory");
     if (info.pageable_device_local_memory) device_extensions.push_back("VK_EXT_pageable_device_local_memory");
     leonida::DeviceFaultFeatures fault_features;
     const bool aftermath = leonida::aftermath::enable();  // already on, before the instance: see above
@@ -22298,6 +22343,8 @@ HRESULT create_vulkan_device_standalone(REFIID riid, void** out, QueueTestSettin
     if (info.pageable_device_local_memory) {
         info.set_device_memory_priority = reinterpret_cast<PFN_vkSetDeviceMemoryPriorityEXT>(
             vkGetDeviceProcAddr(owned.device, "vkSetDeviceMemoryPriorityEXT"));
+        std::fprintf(stderr,
+                     "[rt] d3d12: VK_EXT_pageable_device_local_memory and VK_EXT_memory_priority active (WDDM overcommit paging enabled)\n");
     }
     owned.destroy_device = reinterpret_cast<PFN_vkDestroyDevice>(vkGetDeviceProcAddr(owned.device, "vkDestroyDevice"));
     info.command_queues.resize(command_queue_count);
