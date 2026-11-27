@@ -47,6 +47,7 @@
 #include "../src/vulkan_mesh_limits.h"
 #include "../src/resource_tiling.h"
 #include "../src/cached_pso.h"
+#include "../src/shader_pack.h"
 #include "../src/pipeline_cache_file.h"
 #include "../src/pipeline_profile.h"
 #include "../src/submit_phases.h"
@@ -6664,16 +6665,27 @@ struct DeviceState {
                 else if (dir.empty())
                     std::fprintf(stderr,
                                  "[rt] d3d12: no translated shaders: set LEONIDA_SHADERS to <work>/shaders/spirv\n");
-                else if (!shader_library.load(dir, &error))
-                    std::fprintf(stderr, "[rt] d3d12: %s\n", error.c_str());
                 else {
-                    const auto path = shader_library.directory().u8string();
-                    // fspx counts library/ too (shader_library.h, load()).
-                    std::fprintf(stderr, "[rt] d3d12: %zu translated shaders (%zu fspx, %zu fspx_compute, "
-                                         "%zu fspx_gfx, %zu bvh, %zu exe) from %s\n",
-                                 shader_library.size(), shader_library.fspx_size(), shader_library.fspx_compute_size(),
-                                 shader_library.fspx_gfx_size(), shader_library.bvh_size(), shader_library.exe_size(),
-                                 reinterpret_cast<const char*>(path.c_str()));
+                    auto& pack = leonida::offline::ShaderPack::instance();
+                    if (!pack.open(dir)) {
+                        if (!pack.open(dir.parent_path())) {
+                            pack.open(".");
+                        }
+                    }
+                    if (pack.is_loaded()) {
+                        std::fprintf(stderr, "[rt] d3d12: loaded offline shader pack (%zu entries)\n", pack.size());
+                    }
+                    if (!shader_library.load(dir, &error))
+                        std::fprintf(stderr, "[rt] d3d12: %s\n", error.c_str());
+                    else {
+                        const auto path = shader_library.directory().u8string();
+                        // fspx counts library/ too (shader_library.h, load()).
+                        std::fprintf(stderr, "[rt] d3d12: %zu translated shaders (%zu fspx, %zu fspx_compute, "
+                                             "%zu fspx_gfx, %zu bvh, %zu exe) from %s\n",
+                                     shader_library.size(), shader_library.fspx_size(), shader_library.fspx_compute_size(),
+                                     shader_library.fspx_gfx_size(), shader_library.bvh_size(), shader_library.exe_size(),
+                                     reinterpret_cast<const char*>(path.c_str()));
+                    }
                 }
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[rt] d3d12: invalid translated shader path: %s\n", e.what());
@@ -11017,6 +11029,28 @@ struct ComputeBuildOptions {
     bool key_only = false;                   // only name the journal file (journal_path), build nothing
 };
 
+inline std::vector<std::uint32_t> get_shader_words(const DeviceState& dev, const leonida::ShaderLibrary* lib, const leonida::ShaderEntry& entry) {
+    auto& pack = leonida::offline::ShaderPack::instance();
+    if (pack.is_loaded()) {
+        const std::string_view hash_str = !entry.fssm_sha256.empty() ? entry.fssm_sha256 : entry.fspx_code_sha256;
+        if (!hash_str.empty()) {
+            if (const auto* p_entry = pack.find_by_hex(hash_str)) {
+                uint32_t pref = leonida::offline::kVariantKindTranslated;
+                if (dev.info.subgroup.default_size == 32 && (p_entry->flagsA & leonida::offline::kFlagTierAWave32)) {
+                    pref = leonida::offline::kVariantKindNative32;
+                } else {
+                    pref = leonida::offline::kVariantKindSpirvOpt;
+                }
+                auto spv = pack.get_spirv(*p_entry, pref);
+                if (!spv.empty()) {
+                    return std::vector<std::uint32_t>(spv.begin(), spv.end());
+                }
+            }
+        }
+    }
+    return lib ? lib->spirv(entry) : std::vector<std::uint32_t>{};
+}
+
 // A compute pipeline from a library entry: what a PSO's first dispatch, the warm-up worker and gta6rt
 // --precompile-pipelines all build, so their journal names and the driver's keys are the same. `layout` is the push
 // range of leonida::ShaderUserData, with the device's bindless set 0 when the entry declares bindings; `subgroup` is
@@ -11045,7 +11079,7 @@ ComputeBuild build_compute_pipeline(DeviceState& device, const leonida::ShaderEn
     // PipelineState::enter_build); LEONIDA_SERIAL_BIG_COMPILES=1 compiles them one at a time here instead.
     static std::mutex big_compile;
     std::unique_lock<std::mutex> big_lock(big_compile, std::defer_lock);  // taken below, only for a compile here
-    auto words = library->spirv(*entry);
+    auto words = get_shader_words(device, library, *entry);
     if (words.empty()) {
         std::fprintf(stderr, "[rt] d3d12: %s.spv is missing or not SPIR-V\n", entry->name.c_str());
         return out;
@@ -11671,7 +11705,7 @@ public:
                 }
                 code_stage = &stage;
             }
-            stage.words = library->spirv(*stage.entry);
+            stage.words = get_shader_words(device_, library, *stage.entry);
             if (stage.bit == VK_SHADER_STAGE_FRAGMENT_BIT) {
                 std::string why;
                 if (!rewrite_fragment(stage.words, why)) {
@@ -12848,7 +12882,7 @@ public:
         for (std::size_t i = 0; i < sources_.size(); ++i) {
             const StageSource& source = sources_[i];
             if (source.kind != StageSource::library) continue;
-            words[i] = library->spirv(*source.entry);
+            words[i] = get_shader_words(device_, library, *source.entry);
             if (words[i].empty()) {
                 why = source.entry->name + ".spv is missing or not SPIR-V";
                 return false;
