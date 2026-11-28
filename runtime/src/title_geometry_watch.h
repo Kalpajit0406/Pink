@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace leonida::geometry_writes {
@@ -23,7 +24,7 @@ struct ReleaseQueue {
     std::atomic<bool> pending{false};
 };
 struct State {
-    std::mutex mutex;
+    std::recursive_mutex mutex;
     host_heap::map<std::uintptr_t, Cell> cells;
     std::atomic<std::uint64_t> serial{1};
     std::atomic<std::size_t> count{0};
@@ -172,6 +173,12 @@ enum class Event { write, open, fault, mapping, replaced };
 inline bool notify(std::uintptr_t begin, std::uintptr_t end, Event event, bool* restored = nullptr) {
     auto& s = state();
     if (!s.count.load(std::memory_order_acquire) || end <= begin) return false;
+    static thread_local bool t_in_notify = false;
+    if (t_in_notify) return false;
+    t_in_notify = true;
+    struct ReentrancyGuard {
+        ~ReentrancyGuard() { t_in_notify = false; }
+    } guard;
     std::lock_guard lock(s.mutex);
     auto it = s.cells.lower_bound(begin & ~(tile_size - 1));
     if (it == s.cells.end() || it->first >= end) return false;

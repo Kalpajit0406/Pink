@@ -982,6 +982,7 @@ public:
     void STDMETHODCALLTYPE ExecuteIndirect(ID3D12CommandSignature* signature, UINT max_command_count,
                                            ID3D12Resource* argument_buffer, UINT64 argument_buffer_offset,
                                            ID3D12Resource* count_buffer, UINT64 count_buffer_offset) override {
+        d3d12_trace::record("ID3D12GraphicsCommandList::ExecuteIndirect");
         if (type_ != D3D12_COMMAND_LIST_TYPE_DIRECT && type_ != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
             type_ != D3D12_COMMAND_LIST_TYPE_BUNDLE)
             return check(false);

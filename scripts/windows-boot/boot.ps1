@@ -112,11 +112,12 @@ param(
     [string]$Shaders = "",
     [string]$OutDir = "",
     [string]$Overlay = "",
-    [string]$InputScript = "a@15,a@25,a@35,a@45,a@60,a@75,a@90,a@105,a@120,a@135,a@150,a@165,a@180,a@200,a@220,a@240,a@260",
+    [string]$InputScript = "a@15,a@25,a@35,a@45,a@60,a@75,a@85,a@95,a@105,a@115,a@125,a@135,a@150,a@165,a@180,a@200,a@220,a@240,a@260,a@280,a@300,a@330,a@360,a@400,a@450,a@500,a@550,a@600,a@650",
     [string]$Stacks = "",
     [hashtable]$SetEnv = @{},
     [switch]$NoCapture,
     [switch]$NoInput,
+    [switch]$NoD3D12Trace,
     [string[]]$ExtraArgs = @(),
     [string]$Python = "",
     [int]$SummaryLines = 40,
@@ -230,7 +231,7 @@ if ($Shaders) {
 $defaults = [ordered]@{
     LEONIDA_D3D12                     = "vulkan"
     LEONIDA_DEVICE_TYPE               = "6"            # Series S identity; the runtime answers the ConsoleMode registry read with it
-    LEONIDA_ARENA_MB                  = "1024"
+    LEONIDA_ARENA_MB                  = "4080"
     LEONIDA_PIPELINE_CACHE_BYTES      = "4294967296"
     LEONIDA_STARTUP_CACHE_CHECKPOINTS = "1"
     LEONIDA_PIPELINE_CACHE_DIR        = $(if ($env:LEONIDA_PIPELINE_CACHE_DIR) { $env:LEONIDA_PIPELINE_CACHE_DIR } else { (Join-Path (Split-Path -Parent $OutDir) "pipeline-cache") })
@@ -238,8 +239,8 @@ $defaults = [ordered]@{
     # LEONIDA_GAME_STATE_RVA and LEONIDA_SESSION_STATE_RVA name them; see below.
     LEONIDA_PEEK_SECONDS              = "5"
     LEONIDA_DEVICE_FAULT              = "1"            # device-loss report (VK_EXT_device_fault, checkpoints)
-    LEONIDA_CAPTURE_EVERY             = "60"
-    LEONIDA_CAPTURE_LIMIT             = "40"
+    LEONIDA_CAPTURE_EVERY             = "120"
+    LEONIDA_CAPTURE_LIMIT             = "150"
     DISABLE_RTSS_LAYER                = "1"            # third-party Vulkan overlay layers off
     DISABLE_VULKAN_OBS_CAPTURE        = "1"
     LEONIDA_POOL_ZERO_PAGES           = "1"
@@ -250,9 +251,9 @@ $defaults = [ordered]@{
     LEONIDA_COMPILE_GATE              = "0"
     LEONIDA_SHADOW_GPU                = "1"
     LEONIDA_SHADOW_JOIN               = "1"
-    LEONIDA_SHADOW_ALIAS_MS           = "500"
+    LEONIDA_SHADOW_ALIAS_MS           = "5000"
     LEONIDA_ASYNC_PIPELINES           = "1"
-    LEONIDA_ASYNC_GRAPHICS            = "1"
+    LEONIDA_ASYNC_GRAPHICS            = "0"
     LEONIDA_COMPUTE_COMPILE_WORKERS   = "4"
     LEONIDA_GRAPHICS_COMPILE_WORKERS  = "8"
     LEONIDA_MAX_WIDTH                 = "1280"
@@ -265,18 +266,20 @@ $defaults = [ordered]@{
     LEONIDA_MAX_HOST_RAM_MB           = "16384"
     LEONIDA_CONSOLE_HEAP_GPU          = "1"
     LEONIDA_CONSOLE_HEAP_ARENA        = "1"
+    LEONIDA_SLOT31_ASYNC              = "1"
     LEONIDA_DSTORAGE_RELAX_BCPACK     = "1"
     LEONIDA_MAP_READBACK              = "1"
     LEONIDA_MAP_READBACK_FLOOR        = "0.02"
-    LEONIDA_REFRESH_PER_FRAME         = "0"
-    LEONIDA_TEXTURE_REFRESH_ASYNC     = "0"
-    LEONIDA_TITLE_TEXTURE_CHECK_KB    = "0"
+    LEONIDA_REFRESH_PER_FRAME         = "2"
+    LEONIDA_TEXTURE_REFRESH_ASYNC     = "1"
+    LEONIDA_TITLE_TEXTURE_CHECK_KB    = "1024"
+    LEONIDA_TITLE_EVERY_BUDGET_US     = "1500"
     LEONIDA_UPLOAD_SYSMEM             = "1"
     LEONIDA_TITLE_FILL_ASYNC          = "1"
-    LEONIDA_GEOMETRY_ASYNC            = "1"
+    LEONIDA_GEOMETRY_ASYNC            = "0"
     LEONIDA_GEOMETRY_HOST             = "1"
     LEONIDA_TITLE_WINDOWS_MB          = "256"
-    LEONIDA_GATE_PAUSE_CAP_MS         = "5000"
+    LEONIDA_GATE_PAUSE_CAP_MS         = "250"
     LEONIDA_MIRROR_EXACT              = "1"
     LEONIDA_MEM_REPORT                = "5"
     LEONIDA_MEM_LAZY_COMMIT           = "1"
@@ -328,7 +331,9 @@ foreach ($pair in $EnvPairs) {
 }
 if ($bootEnv["LEONIDA_CAPTURE"]) { $Capture = $bootEnv["LEONIDA_CAPTURE"] }
 
-$gameArgs = @("--run", $Exe, "--game-dir", $GameDir, "--overlay", $Overlay, "--trace", $TraceFile, "--trace-d3d12") + $ExtraArgs
+$gameArgs = @("--run", $Exe, "--game-dir", $GameDir, "--overlay", $Overlay, "--trace", $TraceFile)
+if (-not $NoD3D12Trace) { $gameArgs += "--trace-d3d12" }
+$gameArgs += $ExtraArgs
 $argLine = ($gameArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join " "
 
 if (-not $DigestOnly) {
@@ -364,7 +369,7 @@ if (-not $DigestOnly) {
         $said = $false
         while (-not $owned) {
             try { $owned = $mutex.WaitOne(5000) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
-            if ($owned -and (Get-Process -Name gta6rt -ErrorAction SilentlyContinue)) {
+            if ($owned -and (Get-Process -Name gta6rt -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 7000 })) {
                 # A game started by hand or by another script that does not take this lock: wait for it too.
                 $mutex.ReleaseMutex(); $owned = $false; Start-Sleep -Seconds 5
             }
@@ -440,8 +445,24 @@ $lastPeek = ""; $prevPair = ""
 $presentOk = 0; $presentFailed = 0; $presses = 0
 $shaderLine = ""; $faults = New-Object System.Collections.Generic.List[string]
 $wrapped = 0
+function Get-SharedFileLines {
+    param([string]$Path)
+    $lines = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+        try {
+            while (($l = $sr.ReadLine()) -ne $null) { $lines.Add($l) }
+        } finally {
+            $sr.Dispose()
+            $fs.Dispose()
+        }
+    }
+    return $lines
+}
+
 if (Test-Path -LiteralPath $LogFile) {
-    foreach ($line in [System.IO.File]::ReadLines($LogFile)) {
+    foreach ($line in (Get-SharedFileLines $LogFile)) {
         if ($line.Contains("XboxPresentation::PresentX")) {
             if ($line.EndsWith(" ok")) { $presentOk++ } elseif ($line.EndsWith(" failed")) { $presentFailed++ }
             continue
@@ -481,7 +502,7 @@ $capIndex = Join-Path $Capture "index.txt"
 if (Test-Path -LiteralPath $capIndex) {
     $frames = 0; $nonBlack = 0; $last = ""; $maxSum = -1.0; $maxText = ""
     $meanRx = [regex]'mean rgb ([0-9.]+) ([0-9.]+) ([0-9.]+)'
-    foreach ($line in [System.IO.File]::ReadLines($capIndex)) {
+    foreach ($line in (Get-SharedFileLines $capIndex)) {
         $m = $meanRx.Match($line)
         if (-not $m.Success) { continue }
         $frames++

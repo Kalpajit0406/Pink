@@ -582,6 +582,20 @@ public:
         Reading* r = s.history.back();
         r->AddRef();
         *out = r;
+        // LOCAL DIAGNOSTIC (the landing prompt did not take a scripted A): does the title read the scripted pad at
+        // all, and does it ever read a reading with a button down? Without these two numbers a scripted press that
+        // changes nothing cannot be told apart from a title that never polls the pad.
+        static std::atomic<unsigned long long> polls{0};
+        static std::atomic<bool> press_seen{false};
+        const unsigned long long count = polls.fetch_add(1) + 1;
+        GameInputGamepadState pad_state{};
+        const bool pad_read = r->GetGamepadState(&pad_state);
+        const unsigned buttons = pad_read ? pad_state.buttons : 0u;
+        if (count <= 3 || count % 10000 == 0)
+            std::fprintf(stderr, "[rt] gameinput: reading %llu, buttons 0x%x\n", count, buttons);
+        if (buttons && !press_seen.exchange(true))
+            std::fprintf(stderr, "[rt] gameinput: the title read a press, buttons 0x%x at reading %llu\n", buttons,
+                         count);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetNextReading(IGameInputReading* ref, uint32_t kind, IGameInputDevice* device,

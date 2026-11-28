@@ -1750,8 +1750,6 @@ void save_session_pipeline_cache(const leonida::VulkanDeviceFunctions& vk, VkDev
         return;
     }
     const auto queried = compile_us();
-    // A size query can itself serialize the driver cache. Let newly queued work run first.
-    if (checkpoint && PipelineCompiler::instance().has_compile_waiter()) return;
     const auto path = pipeline_cache_session_path();
     if (path.empty()) return;
     CacheStagingFile staging(path, size);
@@ -2715,7 +2713,6 @@ struct DeviceState {
             return n > 0 && n < sizeof(text) ? std::strtoull(text, nullptr, 10) : 0ull;
         }());
         const bool copy_aliased = alias_period.count() == 0 || start - shadow_alias_time >= alias_period;
-        if (copy_aliased) shadow_alias_time = start;
         std::uint64_t copied = 0;
         for (const ShadowPagesPtr& s : shadows) {
             copied += s->refresh(copy_aliased);
@@ -2735,6 +2732,7 @@ struct DeviceState {
             shadow_pieces.copy_ms += p.copy_ms;
         }
         const auto now = clock::now();
+        if (copy_aliased) shadow_alias_time = now;
         const double ms = std::chrono::duration<double, std::milli>(now - start).count();
         shadow_ms += ms;
         shadow_max_ms = std::max(shadow_max_ms, ms);
@@ -4920,7 +4918,7 @@ struct DeviceState {
         // fetch and the pass's writes stay on the card. The CPU never writes the copy then (the pass does); [input |
         // previous] stay in host memory. No room in the arena: the import, as without the switch.
         bool in_arena = false;
-        if (resource_heap && geometry.cap() && heap_gpu && console_heap_gpu_enabled() && console_heap_arena_enabled() &&
+        if (resource_heap && heap_gpu && console_heap_gpu_enabled() && console_heap_arena_enabled() &&
             bytes <= SIZE_MAX / 2) {
             VkDeviceSize offset = 0;
             const VkDeviceSize size = bytes + guard;
@@ -4946,7 +4944,7 @@ struct DeviceState {
             }
         }
         if (in_arena) {
-        } else if (resource_heap && geometry.cap()) {
+        } else if (resource_heap && heap_gpu && console_heap_gpu_enabled()) {
             if (bytes > (SIZE_MAX - guard) / 3) return false;
             // [copy | guard | input | previous]: the import covers the copy and its guard.
             heap->scratch.reset(static_cast<std::uint8_t*>(VirtualAlloc(nullptr, bytes * 3 + guard, MEM_TOP_DOWN |
@@ -5284,35 +5282,60 @@ struct DeviceState {
             ++shadow_gpu_counts.outside;
             return false;
         }
-        const auto src = reinterpret_cast<std::uintptr_t>(from);
-        std::shared_ptr<ShadowImport> found;
-        auto it = shadow_imports.upper_bound(src);
-        if (it != shadow_imports.begin()) {
-            --it;
-            ShadowImport& cand = *it->second;
-            if (src >= cand.base && src + n <= cand.base + cand.bytes) {
-                std::uint64_t now = 0;
-                bool moved = false;
-                if (!leonida::title_memory_map::changes_since(cand.generation, now, cand.base, cand.base + cand.bytes,
-                                                              [&](std::uintptr_t, std::uintptr_t) { moved = true; }))
-                    moved = true;
-                if (moved) {
-                    shadow_import_bytes -= cand.bytes;
-                    shadow_imports.erase(it);
-                    ++shadow_gpu_counts.dropped;
-                } else {
-                    cand.generation = now;
-                    found = it->second;
+        // A run may span adjacent mapped section views; resolve and queue per-view chunks so boundary crossings still
+        // stay on the GPU copy queue instead of dropping to a CPU copy.
+        std::size_t done = 0;
+        while (done < n) {
+            const auto src = reinterpret_cast<std::uintptr_t>(from) + done;
+            std::size_t chunk = n - done;
+            std::shared_ptr<ShadowImport> found;
+            auto it = shadow_imports.upper_bound(src);
+            if (it != shadow_imports.begin()) {
+                --it;
+                ShadowImport& cand = *it->second;
+                if (src >= cand.base && src < cand.base + cand.bytes) {
+                    std::uint64_t now = 0;
+                    bool moved = false;
+                    if (!leonida::title_memory_map::changes_since(cand.generation, now, cand.base,
+                                                                  cand.base + cand.bytes,
+                                                                  [&](std::uintptr_t, std::uintptr_t) { moved = true; }))
+                        moved = true;
+                    if (moved) {
+                        shadow_import_bytes -= cand.bytes;
+                        shadow_imports.erase(it);
+                        ++shadow_gpu_counts.dropped;
+                    } else {
+                        cand.generation = now;
+                        found = it->second;
+                        chunk = std::min(chunk, static_cast<std::size_t>(cand.base + cand.bytes - src));
+                    }
                 }
             }
+            if (!found) {
+                MEMORY_BASIC_INFORMATION region{};
+                if (VirtualQuery(reinterpret_cast<const void*>(src), &region, sizeof(region)) &&
+                    region.State == MEM_COMMIT && region.Type == MEM_MAPPED) {
+                    const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
+                    if (region_end > src) chunk = std::min(chunk, static_cast<std::size_t>(region_end - src));
+                }
+                found = make_shadow_import(src, chunk);
+                if (!found) {
+                    // Only safe before queueing any sub-chunk; mid-run refusal stops after already-queued prefix so the
+                    // caller's CPU fallback only covers the tail? No: this function returns bool for the whole span, so
+                    // refuse cleanly before queueing when multi-chunk, or fall back only for the remainder via copy_run.
+                    if (done > 0) {
+                        std::memcpy(to + done, from + done, n - done);
+                        return true;
+                    }
+                    ++shadow_gpu_counts.refused;
+                    return false;
+                }
+            }
+            heap_gpu->queue_copy(found->buffer, src - found->base, dst_buffer, dst_offset + done, chunk, found);
+            ++shadow_gpu_counts.copies;
+            shadow_gpu_counts.bytes += chunk;
+            done += chunk;
         }
-        if (!found && !(found = make_shadow_import(src, n))) {
-            ++shadow_gpu_counts.refused;
-            return false;
-        }
-        heap_gpu->queue_copy(found->buffer, src - found->base, dst_buffer, dst_offset, n, found);
-        ++shadow_gpu_counts.copies;
-        shadow_gpu_counts.bytes += n;
         return true;
     }
     // An import of the committed, readable view region around [src, src + n): its 2 MiB-aligned window, inside the
@@ -12271,6 +12294,9 @@ public:
             const auto it = variants_.find(unbound);
             return it == variants_.end() ? VkPipeline(VK_NULL_HANDLE) : it->second;
         };
+        graphics_.build_now = [this](std::uint32_t unbound) {
+            return replay_pipeline("draw-budget", [&] { return variant_now(unbound, "draw-budget"); });
+        };
         graphics_.large = spirv_bytes >= leonida::PipelineCompiles::large_spirv_bytes &&
                           big_compiles() != BigCompiles::unlimited;
         graphics_.estimate = leonida::large_module_estimate(spirv_bytes);
@@ -12557,10 +12583,9 @@ private:
         DeviceState* const state = &device_;
         bool queued = false;
         try {
-            queued = PipelineCompiler::instance().submit(state, state, SIZE_MAX, [state, cache] {
+            queued = PipelineCompiler::instance().submit(state, state, 0, [state, cache] {
                 try {
-                    if (!state->active_compiles.load() && !PipelineCompiler::instance().has_compile_waiter())
-                        save_session_pipeline_cache(state->context->vk, state->info.device, cache, true);
+                    save_session_pipeline_cache(state->context->vk, state->info.device, cache, true);
                 } catch (const std::exception& e) {
                     std::fprintf(stderr, "[rt] pipeline cache checkpoint failed: %s\n", e.what());
                 }
@@ -13011,6 +13036,20 @@ private:
             log_once("a pipeline variant for unbound attachment slots could not be built; slots", int(unbound));
             return VK_NULL_HANDLE;
         }
+        variants_.emplace(unbound, pipeline);
+        return pipeline;
+    }
+
+    // The same variant, built here and now, but only when no other thread is building one: replay holds a budget of
+    // microseconds, so it must never wait on a compile worker's lock (variant() blocks on it). Null when the lock is
+    // held or when the build fails. Replay's draw site spends LEONIDA_PIPELINE_BUDGET_MS through this
+    // (vulkan_replay.h, build_now).
+    VkPipeline variant_now(std::uint32_t unbound, const char* trigger) {
+        std::unique_lock lock(variants_mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) return VK_NULL_HANDLE;
+        if (const auto it = variants_.find(unbound); it != variants_.end()) return it->second;
+        const VkPipeline pipeline = build(unbound, trigger);
+        if (!pipeline) return VK_NULL_HANDLE;
         variants_.emplace(unbound, pipeline);
         return pipeline;
     }

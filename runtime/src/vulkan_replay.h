@@ -1,7 +1,9 @@
 #pragma once
 #include <atomic>
 #include <cfloat>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
 #include "resource_tiling.h"
 
@@ -910,6 +912,10 @@ struct GraphicsPipeline {
     // What `variant` would return when it is built already and nobody is building one, else null; builds nothing. See
     // ComputePipeline::built.
     std::function<VkPipeline(std::uint32_t flags)> built;
+    // Builds the variant here and now, unless another thread is already building one (null then: replay never waits
+    // for a compile worker). The draw site's compile budget spends its allowance through this. See
+    // LEONIDA_PIPELINE_BUDGET_MS.
+    std::function<VkPipeline(std::uint32_t flags)> build_now;
     bool large = false;  // as ComputePipeline::large
     std::uint32_t samples = 1;  // rasterizationSamples; every bound attachment must have this count
     bool async_build = false;
@@ -959,6 +965,46 @@ inline bool strict_replay() {
 #endif
     }();
     return strict;
+}
+
+// LEONIDA_PIPELINE_BUDGET_MS: how much synchronous variant building one replayed command list may do before draws
+// whose variant a compile worker is still building are skipped again. 0 asks for the old behaviour (never build in
+// replay; the draw skips and a later list draws it).
+// Measured in run94 (async graphics on): 32 768 indirect graphics draws skipped for a pending pipeline
+// (`pending_pipeline=32768`) while a single variant takes seconds of CPU to build, so the first scene of the world
+// stays a clear colour until the workers publish. A budget lets the list that needs a variant draw with it, so the
+// picture fills in over the first frames instead of after minutes. Measured against it: `LEONIDA_ASYNC_GRAPHICS=0`
+// (`run96`) never skips and runs at 5 fps because every submission waits for its builds.
+inline long long pipeline_budget_ms() {
+    static const long long budget = [] {
+#ifdef _WIN32
+        char text[24]{};
+        std::size_t length = 0;
+        if (getenv_s(&length, text, sizeof text, "LEONIDA_PIPELINE_BUDGET_MS") != 0 || length <= 1) return 12LL;
+        const long long parsed = std::atoll(text);
+#else
+        const char* text = std::getenv("LEONIDA_PIPELINE_BUDGET_MS");
+        if (!text) return 12LL;
+        const long long parsed = std::atoll(text);
+#endif
+        return parsed < 0 ? 12LL : parsed;
+    }();
+    return budget;
+}
+
+// Per-thread and reset at the start of every replayed list: replay runs one thread per queue, and a list is the unit
+// a frame is submitted in.
+inline long long& pipeline_budget_spent_us() {
+    thread_local long long spent = 0;
+    return spent;
+}
+inline void pipeline_budget_reset() { pipeline_budget_spent_us() = 0; }
+inline bool pipeline_budget_left() {
+    const long long budget = pipeline_budget_ms();
+    return budget > 0 && pipeline_budget_spent_us() < budget * 1000;
+}
+inline void pipeline_budget_spend(std::chrono::steady_clock::duration took) {
+    pipeline_budget_spent_us() += std::chrono::duration_cast<std::chrono::microseconds>(took).count();
 }
 
 inline bool order_buffer_copies() {
@@ -2850,6 +2896,15 @@ ReplayResult prepare_draw(const Draw& draw, const IndirectDrawArgs* arguments, R
             if (!p.pipeline) p.compile = vk.compiles->add(*pipeline, unbound);
         } else {
             p.pipeline = pipeline->variant ? pipeline->variant(unbound) : VK_NULL_HANDLE;
+            // The variant is still being built on a compile worker. Spend this list's compile budget building it here
+            // instead of skipping the draw, so the geometry is drawn on the frame that needs it. Bounded by
+            // LEONIDA_PIPELINE_BUDGET_MS: past the budget the draw skips as before and a later list draws it, which is
+            // what keeps a list from turning into the multi-second stall of LEONIDA_ASYNC_GRAPHICS=0.
+            if (!p.pipeline && arguments && pipeline->build_now && pipeline_budget_left()) {
+                const auto asked = std::chrono::steady_clock::now();
+                p.pipeline = pipeline->build_now(unbound);
+                pipeline_budget_spend(std::chrono::steady_clock::now() - asked);
+            }
             if (!p.pipeline && pipeline->async_build && !strict_replay()) {
                 indirect_stats::skip(indirect_stats::Event::replay_skip, indirect_stats::pending_pipeline);
                 p.skipped = true;
@@ -5709,6 +5764,7 @@ template<typename Resolve>
 ReplayResult replay(const CommandList& list, VkCommandBuffer command_buffer, Resolve&& resolve,
                     const ReplayFunctions& vk, LayoutTracker* tracker = nullptr,
                     std::vector<std::shared_ptr<const OcclusionSegmentPool>>* keep = nullptr) {
+    pipeline_budget_reset();  // this list's share of synchronous variant builds (LEONIDA_PIPELINE_BUDGET_MS)
     if (tracker && tracker->separate_depth_stencil_layouts() != vk.separate_depth_stencil_layouts)
         return unsupported_at(__LINE__);
     const bool pools = keep && vk.create_segment_pool && vk.sum_occlusion && vk.resolve_binary_occlusion &&

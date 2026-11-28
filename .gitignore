@@ -49,4 +49,7 @@ __pycache__/
 *.elf
 runtime/build_msvc/
 bin_publish/
+scratch/
+.vscode/
+gta6rt_symbols.txt
 

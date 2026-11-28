@@ -222,6 +222,11 @@ void fill(Connection& connection, Stream& stream, const ProcessCommand& c, Resul
         r.error = E_INVALIDARG;
         return;
     }
+    const uint32_t packet_frames = opus_packet_frames(c.input, c.input_bytes);
+    if (packet_frames == 0) {
+        r.error = kBadPacket;
+        return;
+    }
 #if defined(LEONIDA_HAVE_OPUS_DECODER)
     if (stream.decoder) {
         const uint32_t channels = leonida_opus_decoder_channels(stream.decoder);
@@ -262,11 +267,7 @@ void fill(Connection& connection, Stream& stream, const ProcessCommand& c, Resul
         return;
     }
 #endif
-    const uint32_t decoded = opus_packet_frames(c.input, c.input_bytes);
-    if (decoded == 0) {
-        r.error = kBadPacket;
-        return;
-    }
+    const uint32_t decoded = packet_frames;
     const uint32_t first = c.first_frame < decoded ? c.first_frame : decoded;
     uint32_t frames = decoded - first;
     if (frames > c.frame_count) frames = c.frame_count;

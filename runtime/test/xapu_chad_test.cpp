@@ -8,9 +8,15 @@
 // chad.dll: XDspActivate hands out zeroed status and stream memory, and both disconnect.
 #include <windows.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <vector>
+
+#if defined(LEONIDA_HAVE_OPUS_DECODER)
+#include "leonida_opus_decoder.h"
+#endif
 
 #include "shims.h"
 
@@ -157,9 +163,23 @@ int main() {
     check(WaitForSingleObject(out.result_event, 0) == WAIT_TIMEOUT, "a command not asking for it leaves the event");
     uint8_t* const packet = base + 3 * 0x280;
     uint8_t* const pcm = base + 0x14000 + 3 * 0x1E00;
-    packet[0] = (31 << 3) | 0;  // one 20 ms CELT frame (config 31, code 0): 960 frames per channel
     std::memset(pcm, 0x55, 0x1E00 + 16);  // the slot and the start of the next, to see nothing past it is written
+#if defined(LEONIDA_HAVE_OPUS_DECODER)
+    std::vector<float> tone(960 * 2, 0.0f);
+    for (uint32_t i = 0; i < 960; ++i) {
+        const float sample = 0.5f * std::sin(2.0f * 3.14159265f * 1000.0f * float(i) / 48000.0f);
+        tone[i * 2] = sample;
+        tone[i * 2 + 1] = -sample;
+    }
+    size_t encoded_bytes = 0;
+    check(leonida_opus_encode_test(tone.data(), 960, 2, packet, 0x280, &encoded_bytes) == LEONIDA_OPUS_OK &&
+              encoded_bytes > 0,
+          "encode a 20 ms stereo Opus test packet");
+    ProcessCommand process{id(3, 3, 1), 0.0f, 1.0f, 0, 960, static_cast<uint32_t>(encoded_bytes), packet, 960 * 8, pcm};
+#else
+    packet[0] = (31 << 3) | 0;  // one 20 ms CELT frame (config 31, code 0): 960 frames per channel
     ProcessCommand process{id(3, 3, 1), 0.0f, 1.0f, 0, 960, 40, packet, 960 * 8, pcm};
+#endif
     uint32_t total = 0;
     check(enqueue(apu, &process, &total) == S_OK && total == 2, "process on stream 3; two commands accepted");
     check(WaitForSingleObject(out.result_event, 0) == WAIT_OBJECT_0, "a command asking for it signals the event");
@@ -174,6 +194,35 @@ int main() {
     check(dequeue(apu, &r) == S_OK && r.id.kind == 3 && r.error == S_OK, "the process result follows");
     uint32_t dword34 = 0;
     std::memcpy(&dword34, reinterpret_cast<const uint8_t*>(&r) + 0x34, 4);
+#if defined(LEONIDA_HAVE_OPUS_DECODER)
+    check(r.frames == 960 && dword34 == 960 * 8 && r.output == pcm && r.input == packet &&
+              r.input_bytes == static_cast<uint32_t>(encoded_bytes),
+          "960 stereo float frames decoded, the byte count at +0x34, the buffers echoed");
+    double energy = 0.0;
+    for (uint32_t i = 0; i < 960 * 2; ++i) {
+        float s = 0.0f;
+        std::memcpy(&s, pcm + i * sizeof(float), sizeof(float));
+        energy += double(s) * double(s);
+    }
+    check(energy > 1.0 && pcm[960 * 8] == 0x55, "the decoded PCM is audible (non-zero) and nothing past it is written");
+    check(count(apu, &dequeued) == 0 && dequeued == 2, "nothing ready, two dequeued");
+
+    // Verify first_frame, frame_count and output_bytes clipping on real encoded Opus frames.
+    process = {id(3, 3), 0.0f, 1.0f, 200, 760, static_cast<uint32_t>(encoded_bytes), packet, 0x1E00, pcm};
+    enqueue(apu, &process, nullptr);
+    dequeue(apu, &r);
+    check(r.error == S_OK && r.frames == 760 && r.output_bytes == 760 * 8, "frames from first_frame to the packet's end");
+    process.frame_count = 300;
+    enqueue(apu, &process, nullptr);
+    dequeue(apu, &r);
+    check(r.frames == 300, "no more than frame_count");
+    process.first_frame = 0;
+    process.frame_count = 960;
+    process.output_bytes = 100 * 8 + 7;
+    enqueue(apu, &process, nullptr);
+    dequeue(apu, &r);
+    check(r.frames == 100 && r.output_bytes == 800, "and no more than the output holds");
+#else
     check(r.frames == 960 && dword34 == 960 * 8 && r.output == pcm && r.input == packet && r.input_bytes == 40,
           "960 stereo float frames, the byte count at +0x34, the buffers echoed");
     bool silent = true;
@@ -218,9 +267,12 @@ int main() {
     enqueue(apu, &process, nullptr);
     dequeue(apu, &r);
     check(r.frames == 100 && r.output_bytes == 800, "and no more than the output holds");
+#endif
 
     // Errors carried in the result: the command is accepted and its result says what went wrong.
+    packet[0] = (31 << 3) | 3;
     packet[1] = 7;  // seven 20 ms frames: 140 ms, longer than an Opus packet may be
+    process.input_bytes = 40;
     enqueue(apu, &process, nullptr);
     dequeue(apu, &r);
     check(r.error == kBadPacket && r.frames == 0, "an impossible packet: 0x8AC81008 in the result");

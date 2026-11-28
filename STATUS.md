@@ -20,17 +20,43 @@ The diff between the two `main` branches is exactly that: one file, two deletion
 
 ## Current measured progress (this PC)
 
-- The title screen is reachable: the game presents an identical “Americas” collage (md5 `8929bf1dfd2e`) in a 180 s window with native PSO failures at 0 and compute-shader misses at 0 in the reached run.
-- With input enabled (scripted pad via `LEONIDA_INPUT_SCRIPT` on this build, which serves no SDL3 devices), the title leaves that landing prompt and the capture sequence changes past the collage: navigation experience, brightness, legal notices, then a dark loading screen.
-- The next concrete blocker on our side is **asset streaming**: during that loading stage the DirectStorage path reports `E_DSTORAGE_DECOMPRESSION_ERROR` (0x89240030) with reason `missing-profile` on several TTD-hosted texture dictionaries (`data/ttdb/...`). That is the lead for getting past the loading screen.
-- Title-bar HUD is now on by default and the counters read in MB; a window-screenshot crop of the title bar exists and shows the caption plus FPS/RAM/VRAM MB and the pipeline counter (`PSO -` because `LEONIDA_MEM_PROBE` was not enabled in that grab).
+Measured with `scripts/windows-boot/boot.ps1 -Name run94 -Seconds 240` on the build in `E:\Leonida\gta6rt.exe`
+(27 Nov 23:50; `LEONIDA_ASYNC_GRAPHICS=1`, `LEONIDA_COMPUTE_COMPILE_WORKERS=4`). Counts only; logs and captures stay in
+`E:\Leonida\runs`.
+
+- **The title screen paints.** 2083 `PresentX ok`, 0 failed, 0 device faults, 35 of 35 captured frames non-black. The
+  frame sequence is the collage (mean rgb 126/103/124, held for the first ~960 presents), the first-run pages, then a
+  fade to the dark loading screen (mean rgb 5.9 → 6.4).
+- **No pipeline-creation failures.** 0 `CreateNativeGraphicsPipelineState failed`, 0 `no translated graphics stage`,
+  0 `no translated compute shader`. 67 759 `ID3D12Device2::CreatePipelineState` and 25 450
+  `XboxID3D12Device::CreateNativeGraphicsPipelineState` calls, 25 038 `PipelineStream::Mesh`.
+- **The DirectStorage missing-profile wall is gone.** 0 `E_DSTORAGE` / 0 `missing-profile` lines in run94 (the run that
+  still had them was run70). `LEONIDA_DSTORAGE_HISTORY=E:\Leonida\work\bcpack\history.bcph` is found by the harness.
+- **What is left is compile latency, not a refusal.** 4 compute pipelines built in the window at 11.6 s, 18.8 s, 19.7 s
+  and 47.0 s each (132 KB – 989 KB of SPIR-V); the pipeline cache wrote 19 071 553 bytes
+  (`pipeline_cache.heavy.bin`). Indirect draws are skipped while their graphics variant is pending:
+  `recorded=37523 emitted=5156 replay_skips=32768 [pending_pipeline=32768]` at the end of the window.
+- **The window was too short to judge.** The loading screen only appears at capture frame 1741 of 2083 presents, i.e.
+  roughly 40 s before the 240 s cut-off, so run94 measures the *start* of the load, not whether it finishes.
+- A one-off crash on a hand-launched run (28 Nov 01:22) was an access violation *inside* the title
+  (`game_scarlett_master.exe+0x7233`, write to `0x8`). It did not reproduce in run94's 242 s, so it is recorded here as
+  unexplained rather than diagnosed.
 
 ## Next concrete actions
 
-1. Follow the DirectStorage missing-profile lead: locate how the BCPack predictor/decoder history is supplied for streamed TTD requests (`runtime/src/bcpack.cpp` returns `reason = "missing-profile"`, and `docs/directstorage.md` describes the `history.bcph` / `LEONIDA_DSTORAGE_HISTORY` / `tools/build_dstorage_history.py` path). Decide whether a history file is the expected fix here or whether a request is missing metadata that must be passed through.
-2. Get past the loading screen to a world frame and capture one that is visibly not the title collage (or, if it truly cannot leave, write a precise one-line statement of the blocking condition with the log lines that prove it).
-3. Optional, separate-auth task only if authorized: get Leonida listed in `4lwayz/portwatch-vi`'s tracker and rerun the site's scout so the listing refreshes.
-4. Keep a window-screenshot crop of the title bar in the repo (the one showing the HUD) only if we accept it as a non-game-data proof; delete the larger game-pixel captures from the repo tree after viewing (repo rule: no game data).
+1. Run the load to completion: `boot.ps1 -Name run95 -Seconds 600` with a longer press script. Decide from its frames
+   whether the loading screen resolves into a world frame; if it does not, the last `[rt]` lines of that run say which
+   subsystem it is waiting on.
+2. Cut compile latency if the load is gated on it. The backlog is graphics variants (`pending_pipeline`); the compute
+   side already shows single builds of 11–47 s. Options, cheapest first: warm the shared cache with
+   `gta6rt --precompile-pipelines` before the boot; keep `LEONIDA_FAST_PIPELINES=all` (no driver optimisation); raise
+   `LEONIDA_GRAPHICS_COMPILE_WORKERS` and compare build-completion counts per window.
+3. Explain the `game_scarlett_master.exe+0x7233` access violation if it returns: pair it with `LEONIDA_STACKS` around
+   the moment it happens and the capture index to tell whether it follows a specific streamed asset or pipeline.
+4. Optional, separate-auth task only if authorized: get Leonida listed in `4lwayz/portwatch-vi`'s tracker and rerun the
+   site's scout so the listing refreshes.
+5. Keep a window-screenshot crop of the title bar in the repo (the one showing the HUD) only if we accept it as a
+   non-game-data proof; delete the larger game-pixel captures from the repo tree after viewing (repo rule: no game data).
 
 ## Push target
 

@@ -1334,6 +1334,7 @@ struct FenceMirror {
     HANDLE event = nullptr;        // auto-reset; the real fence sets it at the armed value
     PTP_WAIT wait = nullptr;      // the thread-pool wait on the completion event
     bool stopping = false;       // guarded by lock
+    std::atomic<std::uint32_t> idle_polls{0};
     std::atomic<bool> arm_failed{false};
     std::atomic<std::uint64_t> armed_value{0};
 };
@@ -1344,7 +1345,10 @@ std::uint64_t refresh_mirror(FenceMirror* m, bool exact = false) {
     AcquireSRWLockExclusive(&m->lock);
     const std::uint64_t value = m->fence->GetCompletedValue();
     const bool advanced = m->completed != value;
-    if (advanced) m->completed = value;
+    if (advanced) {
+        m->completed = value;
+        m->idle_polls.store(0, std::memory_order_relaxed);
+    }
     ReleaseSRWLockExclusive(&m->lock);
     if (advanced && m->link && value != ~std::uint64_t{0}) {
         std::uint64_t reached = m->link->reached_value.load(std::memory_order_acquire);
@@ -1422,7 +1426,11 @@ void arm_mirror_callback(const std::shared_ptr<MirrorLink>& link, ID3D12Fence* f
 }
 
 void wait_for_fence_progress(FenceMirror* mirror) {
-    constexpr LONGLONG kRewindPollInterval = -10 * 10'000;  // 10 ms in relative 100 ns units
+    // Exponential backoff when idle (10 ms -> 50 ms -> 200 ms) avoids waking the threadpool 300+ times/s on static
+    // fences; any progress or event wakeup resets idle_polls to 0.
+    const std::uint32_t polls = mirror->idle_polls.load(std::memory_order_relaxed);
+    const LONGLONG interval_ms = polls < 4 ? 10 : polls < 12 ? 50 : 200;
+    const LONGLONG kRewindPollInterval = -interval_ms * 10'000;  // relative 100 ns units
     ULARGE_INTEGER due{};
     due.QuadPart = static_cast<ULONGLONG>(kRewindPollInterval);
     FILETIME timeout{due.LowPart, due.HighPart};
@@ -1454,6 +1462,10 @@ void note_mirror_run(TP_WAIT_RESULT result) {
 VOID CALLBACK on_fence_progress(PTP_CALLBACK_INSTANCE, PVOID context, PTP_WAIT, TP_WAIT_RESULT result) {
     auto* mirror = static_cast<FenceMirror*>(context);
     note_mirror_run(result);
+    if (result == WAIT_OBJECT_0)
+        mirror->idle_polls.store(0, std::memory_order_relaxed);
+    else
+        mirror->idle_polls.fetch_add(1, std::memory_order_relaxed);
     const std::uint64_t value = refresh_mirror(mirror);
     if (value == ~std::uint64_t{0}) return;
     const std::uint64_t armed = mirror->armed_value.load(std::memory_order_relaxed);

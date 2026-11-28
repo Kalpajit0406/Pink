@@ -92,7 +92,11 @@ const char* gamertag() {
 // pointer is refused without touching its memory. The block is freed on close, so the heap may hand its address out
 // again; a stale handle then names a newer live one, which is harmless here since every handle names the same user.
 struct XUserLocal {
-    uint32_t unused;
+    void* self;
+    uint64_t xuid;
+    uint64_t local_id;
+    uint64_t reserved[8];
+    XUserLocal() : self(this), xuid(kOfflineXuid), local_id(kOfflineLocalId), reserved{} {}
 };
 std::mutex g_handles_mutex;
 std::unordered_set<const void*> g_handles;

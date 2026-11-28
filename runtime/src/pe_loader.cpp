@@ -1507,6 +1507,765 @@ static void patch_xbox_null_resource_assert(Module& m) {
     }
 }
 
+// A loader patch that is applied unless its switch is set to "0", as LEONIDA_TLS_INDEX0 and LEONIDA_TLS_GA_PATCH are.
+// The patches below assume a console build whose checks the PC build trips; keeping the switch means a run that wants
+// the unpatched behaviour to compare against can ask for it, instead of the patch only ever being editable in source.
+static bool patch_switch_on(const char* name) {
+    char v[8] = {};
+    size_t n = 0;
+    return !(getenv_s(&n, v, sizeof(v), name) == 0 && n == 2 && v[0] == '0');
+}
+
+// Says that a switch turned a patch off, once per message, under the loader mutex. Several patches can be off at the
+// same time, so the "already said" state belongs to the message, not to this function: a single shared flag would
+// report only the first patch and hide the rest.
+static void say_patch_off(const char* name, const char* what) {
+    static bool said[4] = {};
+    static const char* const names[4] = {"LEONIDA_WORLD_TRIPWIRE", "LEONIDA_WORLD_INIT_CLAMP",
+                                         "LEONIDA_FEATURE_FLAG_NULL_CHECK", nullptr};
+    std::size_t slot = 0;
+    for (; slot < 3 && names[slot] && std::strcmp(names[slot], name) != 0; ++slot) {
+    }
+    if (slot >= 3) slot = 3;  // not one of the three: share the last slot and still say it once
+    if (said[slot]) return;
+    said[slot] = true;
+    std::fprintf(stderr, "[rt] loader: %s is off (%s=0); the title runs unpatched there\n", what, name);
+}
+
+// One in-line tripwire at world phase init: `cmp byte ptr [rip+...], 1; jne 0x142474606; ...; 0x142474606: int3`.
+// When capture is not active, the console build jumps to `0x2474606` (int 3).
+// If this jump was NOPed, execution fell into the uninitialized capture block and crashed at +0x24745E1.
+// We patch the jump at +0x2474528 to jump directly to +0x2474607 (`jmp +0xDA; nop`), which unlocks the
+// critical section and returns cleanly. We also safeguard +0x24745E1 and NOP the int3 at +0x2474606.
+static void patch_xbox_world_tripwire(Module& m) {
+    if (!patch_switch_on("LEONIDA_WORLD_TRIPWIRE")) {
+        say_patch_off("LEONIDA_WORLD_TRIPWIRE", "the renderer world-tripwire patch");
+        return;
+    }
+    constexpr uint32_t kJneRva = 0x2474528;
+    static constexpr uint8_t kJneBytes[6] = {0x0F, 0x85, 0xD8, 0x00, 0x00, 0x00};
+    static constexpr uint8_t kJmpUnlock[6] = {0xE9, 0xDA, 0x00, 0x00, 0x00, 0x90};
+    if (m.size > kJneRva + sizeof(kJneBytes)) {
+        uint8_t* p = m.base + kJneRva;
+        if (std::memcmp(p, kJneBytes, sizeof(kJneBytes)) == 0) {
+            std::memcpy(p, kJmpUnlock, sizeof(kJmpUnlock));
+            std::fprintf(stderr,
+                         "[rt] loader: patched renderer world tripwire at +0x%X -> jmp +0x2474607 (unlock & ret)\n",
+                         kJneRva);
+        }
+    }
+    constexpr uint32_t kCallRva = 0x24745E1;
+    static constexpr uint8_t kExpectedCall[9] = {0x48, 0x8B, 0x01, 0xFF, 0x90, 0x20, 0x04, 0x00, 0x00};
+    if (m.size > kCallRva + sizeof(kExpectedCall)) {
+        uint8_t* p = m.base + kCallRva;
+        if (std::memcmp(p, kExpectedCall, sizeof(kExpectedCall)) == 0) {
+            std::memset(p, 0x90, sizeof(kExpectedCall));
+            std::fprintf(stderr,
+                         "[rt] loader: safeguarded renderer world unmapped call at +0x%X -> NOP\n",
+                         kCallRva);
+        }
+    }
+    constexpr uint32_t kInt3Rva = 0x2474606;
+    if (m.size > kInt3Rva + 1) {
+        uint8_t* p = m.base + kInt3Rva;
+        if (p[0] == 0xCC) {
+            p[0] = 0x90;
+            std::fprintf(stderr, "[rt] loader: patched renderer int 3 at +0x%X -> NOP\n", kInt3Rva);
+        }
+    }
+}
+
+// Streams-ready check at world entry (+0x4E597A0 / loop at +0x4E59830):
+// On Scarlett the title loops over 36 stream slots, dereferencing vtables.
+// When an asset is still being streamed by DirectStorage, a slot or its vptr holds either
+// NULL (0x0) or a tagged scalar handle (e.g. 0x100000006). Stock code at +0x4E59848
+// blindly dereferences [rcx] and [[rcx] + 0x40], crashing with 0xC0000005.
+// We patch the stream slot validation to test alignment/tagging (cl & 7 != 0 or [rcx] & 7 != 0)
+// and nullness (rax == 0): if unready/tagged/null, it branches to +0x4E59862 returning false (AL=0),
+// keeping DirectStorage streaming active until all assets are fully loaded and initialized.
+static void patch_xbox_stream_ready_check(Module& m) {
+    constexpr uint32_t kCave1Rva = 0x4E59823;
+    constexpr uint32_t kHookRva = 0x4E59848;
+    constexpr uint32_t kCave2Rva = 0x4E59884;
+    static constexpr uint8_t kExpectedCave1[13] = {
+        0x66, 0x66, 0x66, 0x66, 0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static constexpr uint8_t kExpectedHook[7] = {0x48, 0x8B, 0x01, 0x48, 0x8B, 0x40, 0x40};
+    static constexpr uint8_t kExpectedCave2[12] = {
+        0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
+
+    if (m.size > kCave2Rva + sizeof(kExpectedCave2)) {
+        uint8_t* pCave1 = m.base + kCave1Rva;
+        uint8_t* pHook = m.base + kHookRva;
+        uint8_t* pCave2 = m.base + kCave2Rva;
+
+        if (std::memcmp(pCave1, kExpectedCave1, sizeof(kExpectedCave1)) == 0 &&
+            std::memcmp(pHook, kExpectedHook, sizeof(kExpectedHook)) == 0 &&
+            std::memcmp(pCave2, kExpectedCave2, sizeof(kExpectedCave2)) == 0) {
+            // Hook (0x144E59848, 7 bytes): jmp Cave 1; mov rax, [rax + 0x40]; nop
+            static constexpr uint8_t kNewHook[7] = {
+                0xEB, 0xD9,             // jmp 0x144E59823 (Cave 1)
+                0x48, 0x8B, 0x40, 0x40, // mov rax, [rax + 0x40]
+                0x90                    // nop
+            };
+            std::memcpy(pHook, kNewHook, sizeof(kNewHook));
+
+            // Cave 1 (0x144E59823, 13 bytes): test cl, 7; jne unready; mov rax, [rcx]; jmp Cave 2
+            static constexpr uint8_t kNewCave1[13] = {
+                0xF6, 0xC1, 0x07,       // test cl, 7
+                0x75, 0x3A,             // jne 0x144E59862
+                0x48, 0x8B, 0x01,       // mov rax, [rcx]
+                0xEB, 0x57,             // jmp 0x144E59884 (Cave 2)
+                0x90, 0x90, 0x90        // nop padding
+            };
+            std::memcpy(pCave1, kNewCave1, sizeof(kNewCave1));
+
+            // Cave 2 (0x144E59884, 12 bytes): test al, 7; jne unready; test rax, rax; je unready; jmp hook+2
+            static constexpr uint8_t kNewCave2[12] = {
+                0xA8, 0x07,             // test al, 7
+                0x75, 0xDA,             // jne 0x144E59862
+                0x48, 0x85, 0xC0,       // test rax, rax
+                0x74, 0xD5,             // je 0x144E59862
+                0xEB, 0xBB,             // jmp 0x144E5984A (to mov rax, [rax + 0x40])
+                0x90                    // nop padding
+            };
+            std::memcpy(pCave2, kNewCave2, sizeof(kNewCave2));
+
+            std::fprintf(stderr,
+                         "[rt] loader: patched stream ready validation at +0x%X/+0x%X (tagged/null safe)\n",
+                         kHookRva, kCave1Rva);
+        }
+    }
+}
+
+// On Scarlett, an in-line assertion breakpoint at +0x55AA5EB precedes a recovery jump (+0x55AA5AC).
+// On Windows, the INT3 raises 0x80000003 and terminates the process; NOPing it allows execution to proceed.
+static void patch_xbox_stream_alloc_assert(Module& m) {
+    constexpr uint32_t kInt3Rva = 0x55AA5EB;
+    if (m.size > kInt3Rva + 1) {
+        uint8_t* p = m.base + kInt3Rva;
+        if (p[0] == 0xCC) {
+            p[0] = 0x90;
+            std::fprintf(stderr, "[rt] loader: patched stream allocator int 3 at +0x%X -> NOP\n", kInt3Rva);
+        }
+    }
+}
+
+// Stream asset descriptor check at +0x4DA951F:
+// When an asset is still being streamed by DirectStorage, its handle at [rax] is tagged (e.g. 0x100000000)
+// or null. Stock code dereferences [rcx + 0x90] blindly, causing 0xC0000005.
+// We redirect +0x4DA951F to a near stub that checks if rcx is a valid object pointer (rcx >= r8);
+// if unready/tagged, it exits cleanly (add rsp, 0x28; pop rdi; pop rsi; ret) without setting the ready bit.
+static void patch_xbox_stream_asset_descriptor_check(Module& m) {
+    constexpr uint32_t kHookRva = 0x4DA951F;
+    constexpr uint32_t kResumeRva = 0x4DA9526;
+    static constexpr uint8_t kExpectedHook[7] = {0x48, 0x8B, 0x91, 0x90, 0x00, 0x00, 0x00};
+
+    if (m.size > kHookRva + sizeof(kExpectedHook)) {
+        uint8_t* const pHook = m.base + kHookRva;
+        if (std::memcmp(pHook, kExpectedHook, sizeof(kExpectedHook)) == 0) {
+            uint8_t* const stub = rt::clzero_patch::stub_page(reinterpret_cast<uint64_t>(m.base),
+                                                              reinterpret_cast<uint64_t>(m.base) + m.size,
+                                                              0x1000);
+            if (!stub) {
+                std::fprintf(stderr, "[rt] loader: failed to allocate stub page for asset descriptor check\n");
+                return;
+            }
+
+            const uint64_t stub_addr = reinterpret_cast<uint64_t>(stub);
+            const uint64_t hook_addr = reinterpret_cast<uint64_t>(pHook);
+            const uint64_t resume_addr = reinterpret_cast<uint64_t>(m.base + kResumeRva);
+
+            // Construct 24-byte stub:
+            // 00: 4C 39 C1                cmp rcx, r8
+            // 03: 72 0C                   jb unready (to offset 0x11)
+            // 05: 48 8B 91 90 00 00 00    mov rdx, [rcx + 0x90]
+            // 0C: E9 rel32                jmp resume (0x4DA9526)
+            // 11: 48 83 C4 28             add rsp, 0x28
+            // 15: 5F                      pop rdi
+            // 16: 5E                      pop rsi
+            // 17: C3                      ret
+            const int32_t disp_resume = static_cast<int32_t>(resume_addr - (stub_addr + 12 + 5));
+
+            uint8_t stub_bytes[24] = {
+                0x4C, 0x39, 0xC1,
+                0x72, 0x0C,
+                0x48, 0x8B, 0x91, 0x90, 0x00, 0x00, 0x00,
+                0xE9, 0x00, 0x00, 0x00, 0x00,
+                0x48, 0x83, 0xC4, 0x28,
+                0x5F,
+                0x5E,
+                0xC3
+            };
+            std::memcpy(stub_bytes + 13, &disp_resume, sizeof(disp_resume));
+            std::memcpy(stub, stub_bytes, sizeof(stub_bytes));
+
+            DWORD old_prot = 0;
+            VirtualProtect(stub, 0x1000, PAGE_EXECUTE_READ, &old_prot);
+
+            // Hook at 0x4DA951F (7 bytes):
+            // E9 rel32 (jmp stub)
+            // 90 90 (nop nop)
+            const int32_t disp_stub = static_cast<int32_t>(stub_addr - (hook_addr + 5));
+            uint8_t hook_bytes[7] = {0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90};
+            std::memcpy(hook_bytes + 1, &disp_stub, sizeof(disp_stub));
+            std::memcpy(pHook, hook_bytes, sizeof(hook_bytes));
+
+            std::fprintf(stderr,
+                         "[rt] loader: patched stream asset descriptor validation at +0x%X (tagged handle safe via stub at %p)\n",
+                         kHookRva, static_cast<void*>(stub));
+        }
+    }
+}
+
+// On Scarlett, virtual method dispatch at +0x4E59BF7 does `jmp rax` without checking for a NULL method pointer.
+// When an asset implements a no-op virtual handler or has not initialized slot +0x50, rax is 0x0, raising 0xC0000005.
+// We patch +0x4E59BF7 to test rax and return cleanly if NULL (test rax, rax; jz +3; jmp rax; ret).
+static void patch_xbox_null_virtual_call(Module& m) {
+    constexpr uint32_t kCallRva = 0x4E59BF7;
+    static constexpr uint8_t kExpected[9] = {0x48, 0xFF, 0xE0, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
+    if (m.size > kCallRva + sizeof(kExpected)) {
+        uint8_t* p = m.base + kCallRva;
+        if (std::memcmp(p, kExpected, sizeof(kExpected)) == 0) {
+            static constexpr uint8_t kPatched[9] = {
+                0x48, 0x85, 0xC0, // test rax, rax
+                0x74, 0x03,       // je +3 -> to ret
+                0x48, 0xFF, 0xE0, // jmp rax
+                0xC3              // ret
+            };
+            std::memcpy(p, kPatched, sizeof(kPatched));
+            std::fprintf(stderr,
+                         "[rt] loader: patched null virtual dispatch at +0x%X -> safe null ret\n",
+                         kCallRva);
+        }
+    }
+}
+
+// On Scarlett, event dispatch tail calls at +0x4EEE70D, +0x4EEE791, +0x4EEEA8D execute `jmp rax`
+// after popping the 0x90 stack frame, without verifying whether rax is a valid user-mode function pointer.
+// If an uninitialized or sentinel pointer (e.g. 0xB0B121B2AAFAB27C or 0xFFFFFFFFFFFFFFFF) reaches the tail call,
+// execution AV 0xC0000005 is raised.
+// We patch all three sites to jump to a shared stub that validates rax (0x10000 <= rax <= 0x7FFFFFFFFFFF)
+// before executing `jmp rax`; if invalid, it executes `ret` to return safely to the caller event loop.
+static void patch_xbox_event_dispatch_tail_call(Module& m) {
+    static constexpr uint32_t kSites[] = {0x4EEE70D, 0x4EEE791, 0x4EEEA8D};
+    static constexpr uint8_t kExpected[17] = {
+        0x48, 0x81, 0xC4, 0x90, 0x00, 0x00, 0x00, // add rsp, 0x90
+        0x5B,                                     // pop rbx
+        0x5F,                                     // pop rdi
+        0x5E,                                     // pop rsi
+        0x41, 0x5E,                               // pop r14
+        0x41, 0x5F,                               // pop r15
+        0x48, 0xFF, 0xE0                          // jmp rax
+    };
+
+    if (m.size <= kSites[2] + sizeof(kExpected)) return;
+    if (std::memcmp(m.base + kSites[0], kExpected, sizeof(kExpected)) != 0) return;
+
+    uint8_t* const stub = rt::clzero_patch::stub_page(reinterpret_cast<uint64_t>(m.base),
+                                                      reinterpret_cast<uint64_t>(m.base) + m.size,
+                                                      0x1000);
+    if (!stub) {
+        std::fprintf(stderr, "[rt] loader: failed to allocate stub page for event dispatch check\n");
+        return;
+    }
+
+    // Construct 41-byte stub:
+    // 00: 48 81 C4 90 00 00 00      add rsp, 0x90
+    // 07: 5B                        pop rbx
+    // 08: 5F                        pop rdi
+    // 09: 5E                        pop rsi
+    // 0A: 41 5E                     pop r14
+    // 0C: 41 5F                     pop r15
+    // 0E: 49 BB FF FF FF FF FF 7F 00 00  movabs r11, 0x7fffffffffff
+    // 18: 4C 39 D8                  cmp rax, r11
+    // 1B: 77 0B                     ja ret (offset 0x28)
+    // 1D: 48 3D 00 00 01 00         cmp rax, 0x10000
+    // 23: 72 03                     jb ret (offset 0x28)
+    // 25: 48 FF E0                  jmp rax
+    // 28: C3                        ret
+    static constexpr uint8_t kStubBytes[41] = {
+        0x48, 0x81, 0xC4, 0x90, 0x00, 0x00, 0x00,
+        0x5B,
+        0x5F,
+        0x5E,
+        0x41, 0x5E,
+        0x41, 0x5F,
+        0x49, 0xBB, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x00,
+        0x4C, 0x39, 0xD8,
+        0x77, 0x0B,
+        0x48, 0x3D, 0x00, 0x00, 0x01, 0x00,
+        0x72, 0x03,
+        0x48, 0xFF, 0xE0,
+        0xC3
+    };
+    std::memcpy(stub, kStubBytes, sizeof(kStubBytes));
+
+    DWORD old_prot = 0;
+    VirtualProtect(stub, 0x1000, PAGE_EXECUTE_READ, &old_prot);
+
+    const uint64_t stub_addr = reinterpret_cast<uint64_t>(stub);
+    for (uint32_t rva : kSites) {
+        uint8_t* const p = m.base + rva;
+        if (std::memcmp(p, kExpected, sizeof(kExpected)) == 0) {
+            const uint64_t site_addr = reinterpret_cast<uint64_t>(p);
+            const int32_t disp = static_cast<int32_t>(stub_addr - (site_addr + 5));
+
+            uint8_t hook[17] = {
+                0xE9, 0, 0, 0, 0,
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+            };
+            std::memcpy(hook + 1, &disp, sizeof(disp));
+            std::memcpy(p, hook, sizeof(hook));
+
+            std::fprintf(stderr,
+                         "[rt] loader: patched event dispatch tail call at +0x%X -> safe stub at %p\n",
+                         rva, static_cast<void*>(stub));
+        }
+    }
+}
+
+// On Scarlett, feature flag query at +0x5205220 reads [rdx + 0x1da6dc] without verifying rdx.
+// When an entity or stream slot is uninitialized or null, rdx is 0 (or sentinel -1), raising 0xC0000005.
+// We redirect +0x5205220 to a near stub that checks if rdx is a valid pointer (0x10000 <= rdx <= 0x7FFFFFFFFFFF);
+// if invalid or null, it returns cleanly (ret) without dereferencing rdx.
+static void patch_xbox_feature_flag_null_check(Module& m) {
+    if (!patch_switch_on("LEONIDA_FEATURE_FLAG_NULL_CHECK")) {
+        say_patch_off("LEONIDA_FEATURE_FLAG_NULL_CHECK", "the feature-flag null check");
+        return;
+    }
+    constexpr uint32_t kHookRva = 0x5205220;
+    constexpr uint32_t kResumeRva = 0x5205236;
+    static constexpr uint8_t kExpectedHook[22] = {
+        0x41, 0x57,                         // push r15
+        0x41, 0x56,                         // push r14
+        0x41, 0x55,                         // push r13
+        0x41, 0x54,                         // push r12
+        0x56,                               // push rsi
+        0x57,                               // push rdi
+        0x55,                               // push rbp
+        0x53,                               // push rbx
+        0x48, 0x83, 0xEC, 0x28,             // sub rsp, 0x28
+        0x8A, 0x82, 0xDC, 0xA6, 0x1D, 0x00  // mov al, byte ptr [rdx + 0x1da6dc]
+    };
+
+    if (m.size > kHookRva + sizeof(kExpectedHook)) {
+        uint8_t* const pHook = m.base + kHookRva;
+        if (std::memcmp(pHook, kExpectedHook, sizeof(kExpectedHook)) == 0) {
+            uint8_t* const stub = rt::clzero_patch::stub_page(reinterpret_cast<uint64_t>(m.base),
+                                                              reinterpret_cast<uint64_t>(m.base) + m.size,
+                                                              0x1000);
+            if (!stub) {
+                std::fprintf(stderr, "[rt] loader: failed to allocate stub page for feature flag check\n");
+                return;
+            }
+
+            const uint64_t stub_addr = reinterpret_cast<uint64_t>(stub);
+            const uint64_t hook_addr = reinterpret_cast<uint64_t>(pHook);
+            const uint64_t resume_addr = reinterpret_cast<uint64_t>(m.base + kResumeRva);
+
+            // Construct 52-byte stub:
+            // 00: 49 BB FF FF FF FF FF 7F 00 00  movabs r11, 0x7fffffffffff
+            // 0A: 4C 39 DA                       cmp rdx, r11
+            // 0D: 77 24                          ja ret (offset 0x33)
+            // 0F: 48 81 FA 00 00 01 00           cmp rdx, 0x10000
+            // 16: 72 1B                          jb ret (offset 0x33)
+            // 18: 41 57                          push r15
+            // 1A: 41 56                          push r14
+            // 1C: 41 55                          push r13
+            // 1E: 41 54                          push r12
+            // 20: 56                             push rsi
+            // 21: 57                             push rdi
+            // 22: 55                             push rbp
+            // 23: 53                             push rbx
+            // 24: 48 83 EC 28                    sub rsp, 0x28
+            // 28: 8A 82 DC A6 1D 00              mov al, byte ptr [rdx + 0x1da6dc]
+            // 2E: E9 rel32                       jmp resume (0x5205236)
+            // 33: C3                             ret
+            const int32_t disp_resume = static_cast<int32_t>(resume_addr - (stub_addr + 0x2E + 5));
+
+            uint8_t stub_bytes[52] = {
+                0x49, 0xBB, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x00,
+                0x4C, 0x39, 0xDA,
+                0x77, 0x24,
+                0x48, 0x81, 0xFA, 0x00, 0x00, 0x01, 0x00,
+                0x72, 0x1B,
+                0x41, 0x57,
+                0x41, 0x56,
+                0x41, 0x55,
+                0x41, 0x54,
+                0x56,
+                0x57,
+                0x55,
+                0x53,
+                0x48, 0x83, 0xEC, 0x28,
+                0x8A, 0x82, 0xDC, 0xA6, 0x1D, 0x00,
+                0xE9, 0x00, 0x00, 0x00, 0x00,
+                0xC3
+            };
+            std::memcpy(stub_bytes + 0x2F, &disp_resume, sizeof(disp_resume));
+            std::memcpy(stub, stub_bytes, sizeof(stub_bytes));
+
+            DWORD old_prot = 0;
+            VirtualProtect(stub, 0x1000, PAGE_EXECUTE_READ, &old_prot);
+
+            // Hook at 0x5205220 (22 bytes):
+            const int32_t disp_stub = static_cast<int32_t>(stub_addr - (hook_addr + 5));
+            uint8_t hook_bytes[22] = {
+                0xE9, 0x00, 0x00, 0x00, 0x00,
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+            };
+            std::memcpy(hook_bytes + 1, &disp_stub, sizeof(disp_stub));
+            std::memcpy(pHook, hook_bytes, sizeof(hook_bytes));
+
+            std::fprintf(stderr,
+                         "[rt] loader: patched feature flag query at +0x%X (null/sentinel safe via stub at %p)\n",
+                         kHookRva, static_cast<void*>(stub));
+        }
+    }
+}
+
+// On Scarlett, world init loops at +0x52716A2 and +0x52717B3 read element counts r8d and r10d
+// from global variables (+0x68B6CB0 and +0x68B6CB4). Before world assets are hydrated, these
+// fields can contain garbage / uninitialized high values (e.g. 0xAA61D189), causing huge loops
+// (imul rdx, reg, 0xb8) that overrun the allocated table buffer and crash at +0x52716EC.
+// We redirect both sites to stubs that clamp element counts <= 10000; if out-of-bounds, the count
+// is clamped to 0, which cleanly jumps to the empty table skip path (+0x52718A7 and +0x5271857).
+static void patch_xbox_world_init_bounds_check(Module& m) {
+    if (!patch_switch_on("LEONIDA_WORLD_INIT_CLAMP")) {
+        say_patch_off("LEONIDA_WORLD_INIT_CLAMP", "the world init bounds clamp");
+        return;
+    }
+    constexpr uint32_t kHook1Rva = 0x52716A2;
+    constexpr uint32_t kResume1Rva = 0x52716B7;
+    constexpr uint32_t kSkip1Rva = 0x52718A7;
+    constexpr uint32_t kVar1Rva = 0x68B6CB0;
+
+    static constexpr uint8_t kExpected1[21] = {
+        0x44, 0x8B, 0x05, 0x07, 0x56, 0x64, 0x01, // mov r8d, [rip + 0x1645607]
+        0xC4, 0xE1, 0xFA, 0x2A, 0xC0,             // vcvtsi2ss xmm0, xmm0, rax
+        0x4D, 0x85, 0xC0,                         // test r8, r8
+        0x0F, 0x84, 0xF0, 0x01, 0x00, 0x00        // je 0x1452718a7
+    };
+
+    constexpr uint32_t kHook2Rva = 0x52717B3;
+    constexpr uint32_t kResume2Rva = 0x52717C3;
+    constexpr uint32_t kSkip2Rva = 0x5271857;
+    constexpr uint32_t kVar2Rva = 0x68B6CB4;
+
+    static constexpr uint8_t kExpected2[16] = {
+        0x44, 0x8B, 0x15, 0xFA, 0x54, 0x64, 0x01, // mov r10d, [rip + 0x16454fa]
+        0x4D, 0x85, 0xD2,                         // test r10, r10
+        0x0F, 0x84, 0x94, 0x00, 0x00, 0x00        // je 0x145271857
+    };
+
+    if (m.size <= kVar2Rva + 4) return;
+    if (std::memcmp(m.base + kHook1Rva, kExpected1, sizeof(kExpected1)) != 0 ||
+        std::memcmp(m.base + kHook2Rva, kExpected2, sizeof(kExpected2)) != 0)
+        return;
+
+    uint8_t* const stub_page = rt::clzero_patch::stub_page(reinterpret_cast<uint64_t>(m.base),
+                                                          reinterpret_cast<uint64_t>(m.base) + m.size,
+                                                          0x1000);
+    if (!stub_page) {
+        std::fprintf(stderr, "[rt] loader: failed to allocate stub page for world init bounds check\n");
+        return;
+    }
+
+    uint8_t* const stub1 = stub_page;
+    uint8_t* const stub2 = stub_page + 0x40;
+
+    const uint64_t stub1_addr = reinterpret_cast<uint64_t>(stub1);
+    const uint64_t hook1_addr = reinterpret_cast<uint64_t>(m.base + kHook1Rva);
+    const uint64_t resume1_addr = reinterpret_cast<uint64_t>(m.base + kResume1Rva);
+    const uint64_t skip1_addr = reinterpret_cast<uint64_t>(m.base + kSkip1Rva);
+    const uint64_t var1_addr = reinterpret_cast<uint64_t>(m.base + kVar1Rva);
+
+    const int32_t disp_resume1 = static_cast<int32_t>(resume1_addr - (stub1_addr + 0x23 + 5));
+    const int32_t disp_skip1 = static_cast<int32_t>(skip1_addr - (stub1_addr + 0x28 + 5));
+
+    uint8_t stub1_bytes[45] = {
+        0x49, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, // movabs r11, var1_addr
+        0x45, 0x8B, 0x03,                   // mov r8d, dword ptr [r11]
+        0x41, 0x81, 0xF8, 0x10, 0x27, 0x00, 0x00, // cmp r8d, 10000
+        0x76, 0x03,                         // jbe +3 (r8_ok)
+        0x45, 0x31, 0xC0,                   // xor r8d, r8d
+        0xC4, 0xE1, 0xFA, 0x2A, 0xC0,       // vcvtsi2ss xmm0, xmm0, rax
+        0x4D, 0x85, 0xC0,                   // test r8, r8
+        0x74, 0x05,                         // je jmp_skip
+        0xE9, 0, 0, 0, 0,                   // jmp resume1
+        0xE9, 0, 0, 0, 0                    // jmp skip1
+    };
+    std::memcpy(stub1_bytes + 2, &var1_addr, sizeof(var1_addr));
+    std::memcpy(stub1_bytes + 0x24, &disp_resume1, sizeof(disp_resume1));
+    std::memcpy(stub1_bytes + 0x29, &disp_skip1, sizeof(disp_skip1));
+    std::memcpy(stub1, stub1_bytes, sizeof(stub1_bytes));
+
+    const uint64_t stub2_addr = reinterpret_cast<uint64_t>(stub2);
+    const uint64_t hook2_addr = reinterpret_cast<uint64_t>(m.base + kHook2Rva);
+    const uint64_t resume2_addr = reinterpret_cast<uint64_t>(m.base + kResume2Rva);
+    const uint64_t skip2_addr = reinterpret_cast<uint64_t>(m.base + kSkip2Rva);
+    const uint64_t var2_addr = reinterpret_cast<uint64_t>(m.base + kVar2Rva);
+
+    const int32_t disp_resume2 = static_cast<int32_t>(resume2_addr - (stub2_addr + 0x1E + 5));
+    const int32_t disp_skip2 = static_cast<int32_t>(skip2_addr - (stub2_addr + 0x23 + 5));
+
+    uint8_t stub2_bytes[40] = {
+        0x49, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, // movabs r11, var2_addr
+        0x45, 0x8B, 0x13,                   // mov r10d, dword ptr [r11]
+        0x41, 0x81, 0xFA, 0x10, 0x27, 0x00, 0x00, // cmp r10d, 10000
+        0x76, 0x03,                         // jbe +3 (r10_ok)
+        0x45, 0x31, 0xD2,                   // xor r10d, r10d
+        0x4D, 0x85, 0xD2,                   // test r10, r10
+        0x74, 0x05,                         // je jmp_skip
+        0xE9, 0, 0, 0, 0,                   // jmp resume2
+        0xE9, 0, 0, 0, 0                    // jmp skip2
+    };
+    std::memcpy(stub2_bytes + 2, &var2_addr, sizeof(var2_addr));
+    std::memcpy(stub2_bytes + 0x1F, &disp_resume2, sizeof(disp_resume2));
+    std::memcpy(stub2_bytes + 0x24, &disp_skip2, sizeof(disp_skip2));
+    std::memcpy(stub2, stub2_bytes, sizeof(stub2_bytes));
+
+    DWORD old_prot = 0;
+    VirtualProtect(stub_page, 0x1000, PAGE_EXECUTE_READ, &old_prot);
+
+    // Apply Hook 1 (21 bytes): E9 rel32 + 16 NOPs
+    const int32_t disp_hook1 = static_cast<int32_t>(stub1_addr - (hook1_addr + 5));
+    uint8_t hook1_bytes[21] = {
+        0xE9, 0, 0, 0, 0,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+    };
+    std::memcpy(hook1_bytes + 1, &disp_hook1, sizeof(disp_hook1));
+    std::memcpy(m.base + kHook1Rva, hook1_bytes, sizeof(hook1_bytes));
+
+    // Apply Hook 2 (16 bytes): E9 rel32 + 11 NOPs
+    const int32_t disp_hook2 = static_cast<int32_t>(stub2_addr - (hook2_addr + 5));
+    uint8_t hook2_bytes[16] = {
+        0xE9, 0, 0, 0, 0,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+    };
+    std::memcpy(hook2_bytes + 1, &disp_hook2, sizeof(disp_hook2));
+    std::memcpy(m.base + kHook2Rva, hook2_bytes, sizeof(hook2_bytes));
+
+    std::fprintf(stderr,
+                 "[rt] loader: patched world init loops at +0x%X and +0x%X (bounds clamped via stubs)\n",
+                 kHook1Rva, kHook2Rva);
+}
+
+// On Scarlett, subsystem status query at +0xBE700 queries method slot +0x38 on the manager at [rax + 0x180].
+// When the subsystem is uninitialized or not ready yet, [rax + 0x180] holds a tagged/invalid pointer (e.g. 0x55F73C42C75)
+// or points to an uncommitted page (e.g. 0x76E2B6D688), raising 0xC0000005 when dereferenced.
+// We redirect +0xBE700 to an SEH-protected C++ helper that safely queries the method and catches any page faults or
+// access violations, returning unready status 0xFF cleanly.
+extern "C" uint32_t safe_query_subsystem_status(uint64_t engine_mgr) {
+    if (!engine_mgr) return 0xFF;
+    __try {
+        uint8_t* const p = *reinterpret_cast<uint8_t**>(engine_mgr + 0x180);
+        if (!p || (reinterpret_cast<uintptr_t>(p) & 7) != 0) return 0xFF;
+        void** const vtable = *reinterpret_cast<void***>(p);
+        if (!vtable || (reinterpret_cast<uintptr_t>(vtable) & 7) != 0) return 0xFF;
+        using Fn = uint32_t(*)(void*);
+        Fn const method = reinterpret_cast<Fn>(vtable[7]);
+        if (!method || (reinterpret_cast<uintptr_t>(method) & 7) != 0) return 0xFF;
+        return method(p);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0xFF;
+    }
+}
+
+static void patch_xbox_subsystem_status_query(Module& m) {
+    constexpr uint32_t kHookRva = 0xBE700;
+
+    static constexpr uint8_t kExpectedHook[27] = {
+        0x48, 0x83, 0xEC, 0x28,                         // sub rsp, 0x28
+        0xE8, 0xA7, 0x20, 0xE9, 0x04,                   // call 0x144f507b0
+        0x48, 0x8B, 0x88, 0x80, 0x01, 0x00, 0x00,       // mov rcx, qword ptr [rax + 0x180]
+        0x48, 0x8B, 0x01,                               // mov rax, qword ptr [rcx]
+        0x48, 0x83, 0xC4, 0x28,                         // add rsp, 0x28
+        0x48, 0xFF, 0x60, 0x38                          // jmp qword ptr [rax + 0x38]
+    };
+
+    if (m.size <= kHookRva + 32) return;
+    uint8_t* const pHook = m.base + kHookRva;
+    if (std::memcmp(pHook, kExpectedHook, sizeof(kExpectedHook)) != 0) return;
+
+    // Overwrite 27 code bytes + 5 CC padding bytes (total 32 bytes) in-place:
+    //   sub rsp, 0x28
+    //   call 0x144f507b0
+    //   mov rcx, rax
+    //   mov rax, safe_query_subsystem_status
+    //   call rax
+    //   add rsp, 0x28
+    //   ret
+    //   nop; nop; nop
+    const uint64_t fn_addr = reinterpret_cast<uint64_t>(&safe_query_subsystem_status);
+    uint8_t code[32] = {
+        0x48, 0x83, 0xEC, 0x28,
+        0xE8, 0xA7, 0x20, 0xE9, 0x04,
+        0x48, 0x89, 0xC1,
+        0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+        0xFF, 0xD0,
+        0x48, 0x83, 0xC4, 0x28,
+        0xC3,
+        0x90, 0x90, 0x90
+    };
+    std::memcpy(code + 14, &fn_addr, sizeof(fn_addr));
+
+    DWORD old_prot = 0;
+    VirtualProtect(pHook, sizeof(code), PAGE_EXECUTE_READWRITE, &old_prot);
+    std::memcpy(pHook, code, sizeof(code));
+    VirtualProtect(pHook, sizeof(code), old_prot, &old_prot);
+
+    std::fprintf(stderr,
+                 "[rt] loader: patched subsystem status query at +0x%X (safe SEH handler at %p)\n",
+                 kHookRva, reinterpret_cast<void*>(fn_addr));
+}
+
+// On Scarlett, indirect COM/service resolver thunk at +0x56A2090 does `jmp rax` to tail-call
+// a service provider loaded from an uninitialized/unmapped pointer or non-executable data page (e.g. 0x78D063B480).
+// If rax is not a valid executable pointer, execution AV 0xC0000005 is raised.
+// We redirect +0x56A2090 to a safe wrapper that queries VirtualQuery to ensure the target is committed and executable;
+// if non-executable, it returns 0x80040154 (REGDB_E_CLASSNOTREG), allowing the caller's standard fallback error path
+// (+0x55DE08C) to handle it cleanly without crashing.
+// If executable, it restores all registers and stack untouched and tail-jumps directly to rax (`jmp rax`),
+// preserving all arguments (including stack arguments like 5th/6th parameters) for the target function.
+extern "C" int is_valid_executable_ptr(uint64_t fn) {
+    if (fn < 0x10000 || fn > 0x7FFFFFFFFFFF) return 0;
+
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi))) return 0;
+    if (mbi.State != MEM_COMMIT) return 0;
+    const DWORD exec_mask = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if ((mbi.Protect & exec_mask) == 0) return 0;
+    return 1;
+}
+
+static void patch_xbox_lazy_com_dispatch(Module& m) {
+    constexpr uint32_t kHookRva = 0x56A2090;
+    static constexpr uint8_t kExpected[16] = {
+        0xFF, 0xE0, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC
+    };
+
+    if (m.size <= kHookRva + sizeof(kExpected)) return;
+    uint8_t* const pHook = m.base + kHookRva;
+    if (std::memcmp(pHook, kExpected, sizeof(kExpected)) != 0) return;
+
+    uint8_t* const stub = rt::clzero_patch::stub_page(reinterpret_cast<uint64_t>(m.base),
+                                                      reinterpret_cast<uint64_t>(m.base) + m.size,
+                                                      0x1000);
+    if (!stub) {
+        std::fprintf(stderr, "[rt] loader: failed to allocate stub page for lazy COM dispatch\n");
+        return;
+    }
+
+    const uint64_t fn_addr = reinterpret_cast<uint64_t>(&is_valid_executable_ptr);
+
+    // Construct 89-byte stub:
+    // 00: 48 83 EC 48                   sub rsp, 0x48
+    // 04: 48 89 4C 24 20                mov [rsp + 0x20], rcx
+    // 09: 48 89 54 24 28                mov [rsp + 0x28], rdx
+    // 0E: 4C 89 44 24 30                mov [rsp + 0x30], r8
+    // 13: 4C 89 4C 24 38                mov [rsp + 0x38], r9
+    // 18: 48 89 44 24 40                mov [rsp + 0x40], rax
+    // 1D: 48 89 C1                      mov rcx, rax
+    // 20: 48 B8 <8-byte fn_addr>        mov rax, is_valid_executable_ptr
+    // 2A: FF D0                         call rax
+    // 2C: 85 C0                         test eax, eax
+    // 2E: 75 0A                         jne .valid (offset 0x3A)
+    // 30: B8 54 01 04 80                mov eax, 0x80040154
+    // 35: 48 83 C4 48                   add rsp, 0x48
+    // 39: C3                            ret
+    // .valid:
+    // 3A: 48 8B 4C 24 20                mov rcx, [rsp + 0x20]
+    // 3F: 48 8B 54 24 28                mov rdx, [rsp + 0x28]
+    // 44: 4C 8B 44 24 30                mov r8,  [rsp + 0x30]
+    // 49: 4C 8B 4C 24 38                mov r9,  [rsp + 0x38]
+    // 4E: 48 8B 44 24 40                mov rax, [rsp + 0x40]
+    // 53: 48 83 C4 48                   add rsp, 0x48
+    // 57: FF E0                         jmp rax
+    uint8_t stub_bytes[89] = {
+        0x48, 0x83, 0xEC, 0x48,
+        0x48, 0x89, 0x4C, 0x24, 0x20,
+        0x48, 0x89, 0x54, 0x24, 0x28,
+        0x4C, 0x89, 0x44, 0x24, 0x30,
+        0x4C, 0x89, 0x4C, 0x24, 0x38,
+        0x48, 0x89, 0x44, 0x24, 0x40,
+        0x48, 0x89, 0xC1,
+        0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+        0xFF, 0xD0,
+        0x85, 0xC0,
+        0x75, 0x0A,
+        0xB8, 0x54, 0x01, 0x04, 0x80,
+        0x48, 0x83, 0xC4, 0x48,
+        0xC3,
+        0x48, 0x8B, 0x4C, 0x24, 0x20,
+        0x48, 0x8B, 0x54, 0x24, 0x28,
+        0x4C, 0x8B, 0x44, 0x24, 0x30,
+        0x4C, 0x8B, 0x4C, 0x24, 0x38,
+        0x48, 0x8B, 0x44, 0x24, 0x40,
+        0x48, 0x83, 0xC4, 0x48,
+        0xFF, 0xE0
+    };
+    std::memcpy(stub_bytes + 34, &fn_addr, sizeof(fn_addr));
+    std::memcpy(stub, stub_bytes, sizeof(stub_bytes));
+
+    DWORD old_prot = 0;
+    VirtualProtect(stub, 0x1000, PAGE_EXECUTE_READ, &old_prot);
+
+    const uint64_t stub_addr = reinterpret_cast<uint64_t>(stub);
+    const uint64_t hook_addr = reinterpret_cast<uint64_t>(pHook);
+    const int32_t disp_hook = static_cast<int32_t>(stub_addr - (hook_addr + 5));
+
+    uint8_t hook_bytes[16] = {
+        0xE9, 0, 0, 0, 0,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+    };
+    std::memcpy(hook_bytes + 1, &disp_hook, sizeof(disp_hook));
+    std::memcpy(pHook, hook_bytes, sizeof(hook_bytes));
+
+    std::fprintf(stderr,
+                 "[rt] loader: patched lazy COM dispatch at +0x%X (safe tail-call with full stack preservation)\n",
+                 kHookRva);
+}
+
+// On Scarlett, user validity check at +0x5EFD8F0 checks [rcx] != 0 && [rcx+8] != 0 && [rcx+0x10] != 0.
+// In offline mode with no Xbox Live, user sign-in would abort and the title would hang indefinitely on the loading screen.
+// We patch +0x5EFD8F0 to return 1 (mov al, 1; ret) so local user sign-in always succeeds.
+static void patch_xbox_user_validation(Module& m) {
+    constexpr uint32_t kHookRva = 0x5EFD8F0;
+    static constexpr uint8_t kExpected[24] = {
+        0x31, 0xC0,                         // xor eax, eax
+        0x48, 0x83, 0x39, 0x00,             // cmp qword ptr [rcx], 0
+        0x74, 0x0F,                         // je 0x5efd907
+        0x48, 0x83, 0x79, 0x08, 0x00,       // cmp qword ptr [rcx + 8], 0
+        0x74, 0x08,                         // je 0x5efd907
+        0x48, 0x83, 0x79, 0x10, 0x00,       // cmp qword ptr [rcx + 0x10], 0
+        0x0F, 0x95, 0xC0,                   // setne al
+        0xC3                                // ret
+    };
+
+    if (m.size <= kHookRva + sizeof(kExpected)) return;
+    uint8_t* const pHook = m.base + kHookRva;
+    if (std::memcmp(pHook, kExpected, sizeof(kExpected)) != 0) return;
+
+    // mov al, 1; ret; + 21 NOPs
+    uint8_t patch[24] = {
+        0xB0, 0x01, 0xC3,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+    };
+
+    DWORD old_prot = 0;
+    VirtualProtect(pHook, sizeof(patch), PAGE_EXECUTE_READWRITE, &old_prot);
+    std::memcpy(pHook, patch, sizeof(patch));
+    VirtualProtect(pHook, sizeof(patch), old_prot, &old_prot);
+
+    std::fprintf(stderr,
+                 "[rt] loader: patched user validation at +0x%X (force valid local user)\n",
+                 kHookRva);
+}
+
 Module& Loader::load(const std::filesystem::path& image) {
     std::lock_guard lock(mutex_);
     const auto key = module_key(image);
@@ -1521,6 +2280,17 @@ Module& Loader::load(const std::filesystem::path& image) {
         patch_xbox_watchdog(*mapped);
         patch_xbox_debug_break_tripwire(*mapped);
         patch_xbox_null_resource_assert(*mapped);
+        patch_xbox_world_tripwire(*mapped);
+        patch_xbox_stream_ready_check(*mapped);
+        patch_xbox_stream_alloc_assert(*mapped);
+        patch_xbox_stream_asset_descriptor_check(*mapped);
+        patch_xbox_null_virtual_call(*mapped);
+        patch_xbox_event_dispatch_tail_call(*mapped);
+        patch_xbox_feature_flag_null_check(*mapped);
+        patch_xbox_world_init_bounds_check(*mapped);
+        patch_xbox_subsystem_status_query(*mapped);
+        patch_xbox_lazy_com_dispatch(*mapped);
+        patch_xbox_user_validation(*mapped);
         protect_sections(*mapped);
         register_unwind(*mapped);
     } catch (...) {

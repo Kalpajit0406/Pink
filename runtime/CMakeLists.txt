@@ -158,6 +158,55 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
     message(FATAL_ERROR "LEONIDA_REQUIRE_XMA2_DECODER is enabled, but the Rust XMA2 decoder is unavailable")
   endif()
 
+  # Rust Opus decoder (runtime/opus_decoder), built at configure time when cargo is on PATH,
+  # or supplied prebuilt via -DLEONIDA_OPUS_DECODER_LIB=<path> (skipping cargo at configure time).
+  # Without it (or if the cargo build fails) the runtime still builds and XAPU streams output silence.
+  option(LEONIDA_REQUIRE_OPUS_DECODER "Fail configure if the Rust Opus decoder is unavailable" OFF)
+  set(LEONIDA_OPUS_DECODER_LIB "" CACHE FILEPATH
+    "Prebuilt leonida_opus_decoder.lib (skips running cargo at configure time)")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/opus_decoder.cmake")
+  leonida_resolve_prebuilt_opus_decoder("${LEONIDA_OPUS_DECODER_LIB}" "${CMAKE_BINARY_DIR}" _opus_lib_resolved)
+  if(_opus_lib_resolved)
+    message(STATUS "Using prebuilt Rust Opus decoder: ${_opus_lib_resolved}")
+  else()
+    if(NOT LEONIDA_CARGO)
+      find_program(LEONIDA_CARGO cargo)
+    endif()
+    if(LEONIDA_CARGO)
+      set(_opus_target x86_64-pc-windows-msvc)
+      set(_opus_target_dir ${CMAKE_BINARY_DIR}/opus_decoder)
+      set(_opus_lib ${_opus_target_dir}/${_opus_target}/release/leonida_opus_decoder.lib)
+      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/opus_decoder/Cargo.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/opus_decoder/Cargo.lock
+        ${CMAKE_CURRENT_SOURCE_DIR}/opus_decoder/src/lib.rs)
+      execute_process(
+        COMMAND ${LEONIDA_CARGO} build --release --locked --target ${_opus_target}
+                --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/opus_decoder/Cargo.toml
+                --target-dir ${_opus_target_dir}
+        TIMEOUT 120
+        RESULT_VARIABLE _opus_result)
+      if(_opus_result STREQUAL "0" AND EXISTS "${_opus_lib}")
+        set(_opus_lib_resolved "${_opus_lib}")
+      else()
+        message(WARNING "cargo build of runtime/opus_decoder failed: Opus audio will be silent")
+      endif()
+    else()
+      message(STATUS "cargo not found: runtime/opus_decoder not built, Opus audio will be silent")
+    endif()
+  endif()
+  if(_opus_lib_resolved)
+    add_library(leonida_opus_decoder STATIC IMPORTED)
+    set_target_properties(leonida_opus_decoder PROPERTIES
+      IMPORTED_LOCATION "${_opus_lib_resolved}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/opus_decoder"
+      INTERFACE_COMPILE_DEFINITIONS LEONIDA_HAVE_OPUS_DECODER=1
+      INTERFACE_LINK_LIBRARIES "kernel32;ntdll;userenv;ws2_32;dbghelp;synchronization")
+  endif()
+  if(LEONIDA_REQUIRE_OPUS_DECODER AND NOT TARGET leonida_opus_decoder)
+    message(FATAL_ERROR "LEONIDA_REQUIRE_OPUS_DECODER is enabled, but the Rust Opus decoder is unavailable")
+  endif()
+
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   set(bcpack_tools "${CMAKE_CURRENT_SOURCE_DIR}/../tools")
   set(bcpack_tables "${CMAKE_CURRENT_BINARY_DIR}/bcpack_tables.inc")
@@ -353,6 +402,9 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
     target_link_libraries(gta6rt PRIVATE leonida_xma2_decoder)
     target_link_libraries(acphal_test PRIVATE leonida_xma2_decoder)
   endif()
+  if(TARGET leonida_opus_decoder)
+    target_link_libraries(gta6rt PRIVATE leonida_opus_decoder)
+  endif()
 
   # The Zen 2 instructions a desktop CPU may lack (src/cpu_emulation.h): decoded, emulated on a CONTEXT, and run for
   # real with the #UD handler installed, so an Intel host takes the emulated path and an AMD one the native path.
@@ -394,6 +446,9 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
   target_compile_definitions(xapu_chad_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_compile_options(xapu_chad_test PRIVATE /W4 /permissive- /utf-8)
   target_link_options(xapu_chad_test PRIVATE /OPT:NOREF)
+  if(TARGET leonida_opus_decoder)
+    target_link_libraries(xapu_chad_test PRIVATE leonida_opus_decoder)
+  endif()
 
   # The boot stack's earlier xapu.dll and chad.dll shims (shims/xapu.cpp, shims/chad.cpp), which gta6rt no longer
   # links (it serves both DLLs from xapu_chad.cpp): their ABI tests stay as tests of those files.

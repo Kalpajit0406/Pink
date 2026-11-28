@@ -203,7 +203,7 @@ void test_staging_budget() {
     check(staging_bytes(r) == 2048, "unshuffle holds both complete block images");
 
     StagingPool pool;
-    constexpr uint64_t limit = StagingPool::limit;
+    const uint64_t limit = StagingPool::limit_bytes();  // the budget is runtime state (LEONIDA_MEM_STAGE_MB), not a constant
     {
         StagingPool::Lease publisher(pool), helper(pool), refused(pool);
         publisher.acquire(limit - 100);

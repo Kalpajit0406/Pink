@@ -805,6 +805,10 @@ public:
         // NV checkpoints and EXT fault data require a lost device. The CPU ring and the AMD markers are valid at any
         // time.
         dump_dispatches(report_markers(false));
+        // LOCAL DIAGNOSTIC (a stalled queue that is not a hung shader): the submit ring with every wait's target value
+        // and each semaphore's counter now. Marker reports of an idle queue say the next submission never started; the
+        // wait it names here is what it never started for (a value nothing signals).
+        dump_submits();
         // LEONIDA_STALL_CHECKPOINTS=1 (diagnostic): ask for the checkpoints anyway. A hang (Xid 109) the driver
         // recovers from without losing the device otherwise names no program; outside the lost state the call is
         // out of the extension's contract, which the NVIDIA driver has answered so far.
